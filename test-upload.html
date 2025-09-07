@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test MongoDB Upload</title>
+</head>
+<body>
+    <h1>Test MongoDB Server Upload</h1>
+    
+    <form id="uploadForm">
+        <div>
+            <label>Visitor ID:</label>
+            <input type="text" id="visitorId" value="test-visitor-123" />
+        </div>
+        <div>
+            <label>Document:</label>
+            <input type="file" id="document" accept="image/*,.pdf" />
+        </div>
+        <button type="submit">Upload</button>
+    </form>
+    
+    <div id="result"></div>
+    
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault()
+            
+            const formData = new FormData()
+            const fileInput = document.getElementById('document')
+            const visitorId = document.getElementById('visitorId').value
+            
+            if (!fileInput.files[0]) {
+                alert('Please select a file')
+                return
+            }
+            
+            formData.append('document', fileInput.files[0])
+            formData.append('visitorId', visitorId)
+            
+            try {
+                const response = await fetch('http://localhost:3002/api/visitors/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                
+                const result = await response.json()
+                document.getElementById('result').innerHTML = `
+                    <h3>Result:</h3>
+                    <pre>${JSON.stringify(result, null, 2)}</pre>
+                `
+                
+                if (result.success) {
+                    alert('Upload successful!')
+                } else {
+                    alert('Upload failed: ' + result.error)
+                }
+            } catch (error) {
+                document.getElementById('result').innerHTML = `
+                    <h3>Error:</h3>
+                    <pre>${error.message}</pre>
+                `
+                alert('Upload error: ' + error.message)
+            }
+        })
+    </script>
+</body>
+</html>

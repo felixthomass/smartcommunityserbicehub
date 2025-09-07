@@ -1,0 +1,19 @@
+{
+  "name": "community-service-mongo-api",
+  "version": "1.0.0",
+  "description": "MongoDB API server for visitor logs",
+  "type": "module",
+  "main": "mongo-server.js",
+  "scripts": {
+    "start": "node mongo-server.js",
+    "dev": "nodemon mongo-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^8.0.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}
