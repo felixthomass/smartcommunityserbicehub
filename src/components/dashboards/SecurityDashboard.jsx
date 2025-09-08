@@ -21,10 +21,11 @@ import {
   Download
 } from 'lucide-react'
 import { mongoService } from '../../services/mongoService'
+import { passService } from '../../services/passService'
 
 const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   // State management
-  const [activeView, setActiveView] = useState('list') // 'list', 'add', 'edit'
+  const [activeView, setActiveView] = useState('list') // 'list', 'add', 'edit', 'scan'
   const [visitorLogs, setVisitorLogs] = useState([])
   const [filteredLogs, setFilteredLogs] = useState([])
   const [isLoading, setIsLoading] = useState(false)
@@ -55,6 +56,9 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [showCamera, setShowCamera] = useState(false)
   const [connectionStatus, setConnectionStatus] = useState('checking') // 'checking', 'connected', 'disconnected'
   const [selectedVisitor, setSelectedVisitor] = useState(null) // For detailed view
+  const [scanCode, setScanCode] = useState('')
+  const [scannedPass, setScannedPass] = useState(null)
+  const [showQrScanner, setShowQrScanner] = useState(false)
 
   // Check connection status
   const checkConnection = async () => {
@@ -87,6 +91,15 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       }
     })
   }, [])
+
+  // Sync sidebar route -> activeView
+  useEffect(() => {
+    if (currentPage === 'scan-pass') {
+      setActiveView('scan')
+    } else if (currentPage === 'visitors') {
+      setActiveView('list')
+    }
+  }, [currentPage])
 
   // Filter logs when search term or filters change
   useEffect(() => {
@@ -1175,6 +1188,117 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         {/* Show different views based on activeView */}
         {activeView === 'add' || activeView === 'edit' ? renderVisitorForm() :
          activeView === 'details' ? renderVisitorDetails() :
+         activeView === 'scan' ? (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Scan/Enter Visitor Pass</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Pass Code</label>
+                  <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={scanCode}
+                    onChange={(e)=>setScanCode(e.target.value.toUpperCase())}
+                    placeholder="Enter code printed in QR"
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <button
+                    onClick={async ()=>{
+                      try {
+                        const { pass } = await passService.getPassByCode(scanCode.trim())
+                        setScannedPass(pass)
+                      } catch (e) {
+                        alert('Pass not found')
+                        setScannedPass(null)
+                      }
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg"
+                  >Fetch</button>
+                  <button
+                    onClick={async ()=>{
+                      try {
+                        if (!window.Html5QrcodeScanner) {
+                          await new Promise((resolve, reject) => {
+                            const s = document.createElement('script')
+                            s.src = 'https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js'
+                            s.onload = resolve
+                            s.onerror = reject
+                            document.body.appendChild(s)
+                          })
+                        }
+                        setShowQrScanner(true)
+                        setTimeout(() => {
+                          if (!window.Html5QrcodeScanner) return
+                          const scanner = new window.Html5QrcodeScanner('qr-reader', { fps: 10, qrbox: 250 })
+                          scanner.render((decodedText) => {
+                            setScanCode(decodedText.toUpperCase())
+                            scanner.clear()
+                            setShowQrScanner(false)
+                          }, () => {})
+                        }, 0)
+                      } catch (e) {
+                        alert('Unable to start QR scanner. Please enter the code manually.')
+                      }
+                    }}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg"
+                  >Scan QR</button>
+                </div>
+              </div>
+
+              {showQrScanner && (
+                <div className="mt-4">
+                  <div id="qr-reader" className="w-full max-w-md"></div>
+                </div>
+              )}
+
+              {scannedPass && (
+                <div className="mt-6 border dark:border-gray-700 rounded-lg p-4">
+                  <h4 className="font-medium text-gray-900 dark:text-white mb-2">Pass Details</h4>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Visitor: {scannedPass.visitorName} ({scannedPass.visitorPhone})</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Host: {scannedPass.hostName} • {scannedPass.building}-{scannedPass.flatNumber}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Valid until: {new Date(scannedPass.validUntil).toLocaleString()}</p>
+                  <div className="mt-4 flex gap-3">
+                    <button
+                      onClick={async ()=>{
+                        try {
+                          const result = await mongoService.createVisitorLog({
+                            visitorName: scannedPass.visitorName,
+                            visitorPhone: scannedPass.visitorPhone,
+                            visitorEmail: scannedPass.visitorEmail,
+                            idType: 'other',
+                            idNumber: 'QR_PASS_'+scannedPass.code,
+                            purpose: 'Resident visitor pass',
+                            hostName: scannedPass.hostName,
+                            hostFlat: `${scannedPass.building || '-'}-${scannedPass.flatNumber || '-'}`,
+                            hostPhone: scannedPass.hostPhone || 'N/A',
+                            vehicleNumber: '',
+                            notes: 'Logged from QR pass',
+                            securityOfficer: user.name || user.email
+                          })
+                          if (result.success) {
+                            alert('Visitor logged successfully')
+                            setScannedPass(null)
+                            setScanCode('')
+                            loadVisitorLogs()
+                          } else {
+                            alert('Failed to create visitor log')
+                          }
+                        } catch (e) {
+                          alert('Failed to create visitor log')
+                        }
+                      }}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg"
+                    >Log Entry</button>
+                    <button
+                      onClick={() => { setScannedPass(null); setScanCode('') }}
+                      className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+                    >Reject</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+         ) :
          renderVisitorList()}
       </div>
 

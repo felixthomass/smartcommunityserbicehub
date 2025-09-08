@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
-import { Users, Search, Filter, Edit, Trash2, Shield, User, Building2, Phone, Mail, Send, MessageSquare, Key } from 'lucide-react'
+import { residentService } from '../services/residentService'
+import { Users, Search, Filter, Edit, Trash2, Shield, User, Building2, Phone, Mail, Send, MessageSquare, Key, Ban, CheckCircle } from 'lucide-react'
 
 const AdminUserManagementSimple = () => {
   const { user } = useAuth()
@@ -18,13 +18,20 @@ const AdminUserManagementSimple = () => {
 
   const fetchUsers = async () => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (error) throw error
-      setUsers(data || [])
+      const { residents } = await residentService.listResidents()
+      // map residents to expected shape used by UI
+      const mapped = (residents || []).map(r => ({
+        id: r.authUserId || r._id,
+        name: r.name || '',
+        email: r.email || '',
+        phone: r.phone || '',
+        flat_number: r.flatNumber || '',
+        building: r.building || '',
+        isRestricted: !!r.isRestricted,
+        role: 'resident',
+        created_at: r.createdAt || new Date().toISOString()
+      }))
+      setUsers(mapped)
     } catch (error) {
       console.error('Error fetching users:', error)
       setMessage({ type: 'error', text: 'Failed to load users' })
@@ -34,53 +41,36 @@ const AdminUserManagementSimple = () => {
   }
 
   const handleRoleChange = async (userId, newRole) => {
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ role: newRole })
-        .eq('id', userId)
-
-      if (error) throw error
-
-      // Update local state
-      setUsers(users.map(user => 
-        user.id === userId ? { ...user, role: newRole } : user
-      ))
-
-      setMessage({ type: 'success', text: 'User role updated successfully!' })
-      setEditingUser(null)
-    } catch (error) {
-      console.error('Error updating user role:', error)
-      setMessage({ type: 'error', text: 'Failed to update user role' })
-    }
+    // Residents are read-only roles in this simple view
+    setUsers(users.map(user => 
+      user.id === userId ? { ...user, role: newRole } : user
+    ))
+    setEditingUser(null)
+    setMessage({ type: 'success', text: 'Role updated locally (no backend change in this view).' })
   }
 
   const handleDeleteUser = async (userId) => {
-    if (!confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
-      return
-    }
-
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', userId)
-
-      if (error) throw error
-
-      // Update local state
-      setUsers(users.filter(user => user.id !== userId))
-      setMessage({ type: 'success', text: 'User deleted successfully!' })
-    } catch (error) {
-      console.error('Error deleting user:', error)
-      setMessage({ type: 'error', text: 'Failed to delete user' })
-    }
+    alert('Deleting residents is not implemented yet in this view.')
   }
 
   const handleSendCredentials = (staffUser) => {
     // Simple alert for now - will implement full functionality later
     alert(`Sending credentials for ${staffUser.name} (${staffUser.email}) to admin via email and WhatsApp`)
     setMessage({ type: 'success', text: 'Credentials sent successfully!' })
+  }
+
+  const toggleRestriction = async (userItem) => {
+    try {
+      const next = !userItem.isRestricted
+      const result = await residentService.setRestriction(userItem.id, next)
+      if (result.success) {
+        setUsers(users.map(u => u.id === userItem.id ? { ...u, isRestricted: next } : u))
+        setMessage({ type: 'success', text: next ? 'Resident restricted' : 'Resident unrestricted' })
+      }
+    } catch (error) {
+      console.error('Error updating restriction:', error)
+      setMessage({ type: 'error', text: 'Failed to update restriction' })
+    }
   }
 
   const getRoleColor = (role) => {
@@ -224,6 +214,11 @@ const AdminUserManagementSimple = () => {
                           <div className="text-sm text-gray-500 dark:text-gray-400">
                             ID: {user.id.slice(0, 8)}...
                           </div>
+                          {user.isRestricted && (
+                            <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded bg-red-100 text-red-700 text-xs">
+                              <Ban className="w-3 h-3 mr-1" /> Restricted
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -291,15 +286,13 @@ const AdminUserManagementSimple = () => {
                             <Key className="w-4 h-4" />
                           </button>
                         )}
-                        {user.id !== user?.id && (
-                          <button
-                            onClick={() => handleDeleteUser(user.id)}
-                            className="text-red-600 hover:text-red-500"
-                            title="Delete user"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => toggleRestriction(user)}
+                          className={`${user.isRestricted ? 'text-green-600 hover:text-green-500' : 'text-red-600 hover:text-red-500'}`}
+                          title={user.isRestricted ? 'Unrestrict' : 'Restrict'}
+                        >
+                          {user.isRestricted ? <CheckCircle className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
+                        </button>
                       </div>
                     </td>
                   </tr>

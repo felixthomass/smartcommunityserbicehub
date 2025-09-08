@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { supabase } from '../lib/supabase'
 import { User, Mail, Phone, Home, Building2, Save, Edit, X } from 'lucide-react'
+import { residentService } from '../services/residentService'
 
 const UserProfile = () => {
   const { user, login } = useAuth()
@@ -12,22 +12,41 @@ const UserProfile = () => {
     name: '',
     email: '',
     phone: '',
+    ownerName: '',
     flatNumber: '',
     building: '',
     role: ''
   })
 
   useEffect(() => {
-    if (user) {
-      setFormData({
+    const load = async () => {
+      if (!user?.id) return
+      const base = {
         name: user.name || '',
         email: user.email || '',
         phone: user.phone || '',
+        ownerName: '',
         flatNumber: user.flatNumber || '',
         building: user.building || '',
         role: user.role || ''
-      })
+      }
+      try {
+        const { resident } = await residentService.getProfile(user.id)
+        setFormData({
+          name: resident?.name || base.name,
+          email: resident?.email || base.email,
+          phone: resident?.phone || base.phone,
+          ownerName: resident?.ownerName || base.ownerName,
+          flatNumber: resident?.flatNumber || base.flatNumber,
+          building: resident?.building || base.building,
+          role: base.role
+        })
+      } catch (e) {
+        // If 404/no profile yet, stick with base values
+        setFormData(base)
+      }
     }
+    load()
   }, [user])
 
   const handleChange = (e) => {
@@ -40,18 +59,15 @@ const UserProfile = () => {
     setMessage({ type: '', text: '' })
 
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({
-          name: formData.name,
-          phone: formData.phone,
-          flat_number: formData.flatNumber,
-          building: formData.building,
-          updated_at: new Date()
-        })
-        .eq('id', user.id)
-
-      if (error) throw error
+      await residentService.saveProfile({
+        authUserId: user.id,
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        ownerName: formData.ownerName,
+        flatNumber: formData.flatNumber,
+        building: formData.building
+      })
 
       // Update local user state
       const updatedUser = {
@@ -67,7 +83,7 @@ const UserProfile = () => {
       setIsEditing(false)
     } catch (error) {
       console.error('Error updating profile:', error)
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: error.message || 'Failed to update profile' })
     } finally {
       setLoading(false)
     }
@@ -205,6 +221,26 @@ const UserProfile = () => {
 
             {/* Flat Details */}
             <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Owner Name
+                </label>
+                {isEditing ? (
+                  <input
+                    type="text"
+                    name="ownerName"
+                    value={formData.ownerName}
+                    onChange={handleChange}
+                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    placeholder="Enter owner name"
+                  />
+                ) : (
+                  <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                    <User className="w-5 h-5 text-gray-400" />
+                    <span className="text-gray-900 dark:text-white">{formData.ownerName || 'Not provided'}</span>
+                  </div>
+                )}
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Flat Number

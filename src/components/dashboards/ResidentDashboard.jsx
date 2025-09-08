@@ -1,12 +1,218 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { 
   Home, CreditCard, MessageSquare, QrCode, Bell, 
   User, LogOut, Settings, Calendar, Users, 
   Building2, Phone, Mail, MapPin
 } from 'lucide-react'
 
-const ResidentDashboard = ({ user, onLogout }) => {
+import { residentService } from '../../services/residentService'
+import { complaintService } from '../../services/complaintService'
+import { passService } from '../../services/passService'
+
+const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [activeTab, setActiveTab] = useState('dashboard')
+  const [profile, setProfile] = useState(null)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [needsProfile, setNeedsProfile] = useState(true)
+  const [hasSaved, setHasSaved] = useState(false)
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    ownerName: '',
+    flatNumber: '',
+    building: ''
+  })
+  const [errors, setErrors] = useState({})
+  const [complaintForm, setComplaintForm] = useState({ title: '', description: '', category: 'general', priority: 'normal' })
+  const [complaintSubmitting, setComplaintSubmitting] = useState(false)
+  const [myComplaints, setMyComplaints] = useState([])
+  const [passForm, setPassForm] = useState({ visitorName: '', visitorPhone: '', visitorEmail: '', validHours: 6 })
+  const [creatingPass, setCreatingPass] = useState(false)
+  const [myPasses, setMyPasses] = useState([])
+
+  const isProfileComplete = useMemo(() => {
+    const required = ['email', 'phone', 'ownerName', 'flatNumber']
+    return required.every((k) => (form[k] || '').trim().length > 0)
+  }, [form])
+
+  const hasRequiredFields = (obj) => {
+    if (!obj) return false
+    const required = ['email', 'phone', 'ownerName', 'flatNumber']
+    return required.every((k) => (obj[k] || '').toString().trim().length > 0)
+  }
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const authUserId = user?.id
+        if (!authUserId) return
+        const { resident } = await residentService.getProfile(authUserId)
+        const base = {
+          name: user.name || '',
+          email: user.email || '',
+          phone: user.phone || '',
+          ownerName: '',
+          flatNumber: user.flatNumber || '',
+          building: user.building || ''
+        }
+        if (resident) {
+          setProfile(resident)
+          setForm({
+            name: resident.name || base.name,
+            email: resident.email || base.email,
+            phone: resident.phone || base.phone,
+            ownerName: resident.ownerName || base.ownerName,
+            flatNumber: resident.flatNumber || base.flatNumber,
+            building: resident.building || base.building
+          })
+          setNeedsProfile(!hasRequiredFields(resident))
+        } else {
+          setForm(base)
+          setNeedsProfile(!hasRequiredFields(base))
+        }
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setProfileLoading(false)
+      }
+    }
+    load()
+  }, [user])
+
+  // Sync sidebar route to local tabs
+  useEffect(() => {
+    if (!currentPage) return
+    const map = {
+      dashboard: 'dashboard',
+      payments: 'payments',
+      complaints: 'complaints',
+      visitors: 'visitors',
+      announcements: 'announcements',
+      profile: 'profile'
+    }
+    const next = map[currentPage] || 'dashboard'
+    setActiveTab(next)
+  }, [currentPage])
+
+  // Load my complaints when switching to complaints tab
+  useEffect(() => {
+    const fetchMyComplaints = async () => {
+      if (activeTab !== 'complaints' || !user?.id) return
+      try {
+        const { complaints } = await complaintService.listComplaints(user.id)
+        setMyComplaints(complaints || [])
+      } catch (e) {
+        console.error(e)
+        setMyComplaints([])
+      }
+    }
+    fetchMyComplaints()
+  }, [activeTab, user])
+
+  // Load my passes when in visitors tab
+  useEffect(() => {
+    const fetchMyPasses = async () => {
+      if (activeTab !== 'visitors' || !user?.id) return
+      try {
+        const { passes } = await passService.listPasses(user.id)
+        setMyPasses(passes || [])
+      } catch (e) {
+        console.error(e)
+        setMyPasses([])
+      }
+    }
+    fetchMyPasses()
+  }, [activeTab, user])
+
+  const createPass = async () => {
+    if (!user?.id) return
+    try {
+      setCreatingPass(true)
+      if (!passForm.visitorName.trim() || !passForm.visitorPhone.trim()) return
+      const payload = {
+        visitorName: passForm.visitorName,
+        visitorPhone: passForm.visitorPhone,
+        visitorEmail: passForm.visitorEmail,
+        hostAuthUserId: user.id,
+        hostName: user.name || '',
+        building: user.building || '',
+        flatNumber: user.flatNumber || '',
+        validUntil: new Date(Date.now() + Number(passForm.validHours || 6) * 60 * 60 * 1000).toISOString()
+      }
+      await passService.createPass(payload)
+      setPassForm({ visitorName: '', visitorPhone: '', visitorEmail: '', validHours: 6 })
+      const { passes } = await passService.listPasses(user.id)
+      setMyPasses(passes || [])
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setCreatingPass(false)
+    }
+  }
+
+  const submitComplaint = async () => {
+    if (!user?.id) return
+    try {
+      setComplaintSubmitting(true)
+      if (!complaintForm.title.trim() || !complaintForm.description.trim()) return
+      const payload = {
+        ...complaintForm,
+        residentAuthUserId: user.id,
+        residentName: user.name || '',
+        flatNumber: user.flatNumber || '',
+        building: user.building || ''
+      }
+      await complaintService.createComplaint(payload)
+      setComplaintForm({ title: '', description: '', category: 'general', priority: 'normal' })
+      const { complaints } = await complaintService.listComplaints(user.id)
+      setMyComplaints(complaints || [])
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setComplaintSubmitting(false)
+    }
+  }
+
+  const handleSaveProfile = async () => {
+    if (!user?.id) return
+    try {
+      setSaving(true)
+      const nextErrors = {}
+      // Name and Email are locked from user; still ensure present
+      if (!(user.email || '').trim()) nextErrors.email = 'Email is required'
+      if (!(user.name || '').trim()) nextErrors.name = 'Name is required'
+      if (!form.ownerName.trim()) nextErrors.ownerName = 'Owner name is required'
+      if (!form.flatNumber.trim()) nextErrors.flatNumber = 'Flat number is required'
+      if (!form.phone.trim()) nextErrors.phone = 'Phone is required'
+      else if (!/^\+?[0-9]{7,15}$/.test(form.phone.trim())) nextErrors.phone = 'Enter a valid phone number'
+      if (!form.building.trim()) nextErrors.building = 'Select a building'
+      else if (!['A','B','C'].includes(form.building)) nextErrors.building = 'Invalid building'
+
+      setErrors(nextErrors)
+      if (Object.keys(nextErrors).length > 0) {
+        setSaving(false)
+        return
+      }
+
+      await residentService.saveProfile({
+        authUserId: user.id,
+        name: user.name || form.name,
+        email: user.email || form.email,
+        phone: form.phone,
+        ownerName: form.ownerName,
+        flatNumber: form.flatNumber,
+        building: form.building
+      })
+      setHasSaved(true)
+      setNeedsProfile(false)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   // Safety check for user object
   if (!user) {
@@ -20,14 +226,7 @@ const ResidentDashboard = ({ user, onLogout }) => {
     )
   }
 
-  const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: Home },
-    { id: 'payments', label: 'Payments', icon: CreditCard },
-    { id: 'complaints', label: 'Complaints', icon: MessageSquare },
-    { id: 'visitors', label: 'Visitors', icon: QrCode },
-    { id: 'announcements', label: 'Announcements', icon: Bell },
-    { id: 'profile', label: 'Profile', icon: User },
-  ]
+
 
   const renderContent = () => {
     switch (activeTab) {
@@ -132,29 +331,71 @@ const ResidentDashboard = ({ user, onLogout }) => {
         return (
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">My Complaints</h3>
-                <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                  New Complaint
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">New Complaint</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Title</label>
+                  <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={complaintForm.title}
+                    onChange={(e)=>setComplaintForm({...complaintForm, title: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Category</label>
+                  <select className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={complaintForm.category}
+                    onChange={(e)=>setComplaintForm({...complaintForm, category: e.target.value})}
+                  >
+                    <option value="general">General</option>
+                    <option value="plumbing">Plumbing</option>
+                    <option value="electrical">Electrical</option>
+                    <option value="security">Security</option>
+                    <option value="cleaning">Cleaning</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Priority</label>
+                  <select className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={complaintForm.priority}
+                    onChange={(e)=>setComplaintForm({...complaintForm, priority: e.target.value})}
+                  >
+                    <option value="low">Low</option>
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Description</label>
+                  <textarea rows={4} className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={complaintForm.description}
+                    onChange={(e)=>setComplaintForm({...complaintForm, description: e.target.value})}
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button onClick={submitComplaint} disabled={complaintSubmitting || !complaintForm.title || !complaintForm.description}
+                  className={`px-4 py-2 rounded-lg text-white ${complaintSubmitting ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                  {complaintSubmitting ? 'Submitting...' : 'Submit Complaint'}
                 </button>
               </div>
-              <div className="space-y-4">
-                <div className="p-4 border dark:border-gray-700 rounded-lg">
-                  <div className="flex justify-between items-start mb-2">
-                    <h4 className="font-medium text-gray-900 dark:text-white">Plumbing Issue</h4>
-                    <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs">In Progress</span>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">My Complaints</h3>
+              <div className="space-y-3">
+                {myComplaints.length === 0 ? (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">No complaints yet.</p>
+                ) : myComplaints.map((c) => (
+                  <div key={c._id} className="p-4 border dark:border-gray-700 rounded-lg">
+                    <div className="flex justify-between items-start mb-1">
+                      <h4 className="font-medium text-gray-900 dark:text-white">{c.title}</h4>
+                      <span className={`px-2 py-1 rounded text-xs ${c.status==='resolved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{c.status}</span>
+                    </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">{c.description}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{new Date(c.createdAt).toLocaleString()} • {c.category} • {c.priority}</p>
                   </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Kitchen sink is leaking</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-500">Submitted: Dec 20, 2024</p>
-                </div>
-                <div className="p-4 border dark:border-gray-700 rounded-lg">
-                  <div className="flex justify-between items-start mb-2">
-                    <h4 className="font-medium text-gray-900 dark:text-white">Elevator Maintenance</h4>
-                    <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-xs">Open</span>
-                  </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Elevator making strange noises</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-500">Submitted: Dec 18, 2024</p>
-                </div>
+                ))}
               </div>
             </div>
           </div>
@@ -163,23 +404,71 @@ const ResidentDashboard = ({ user, onLogout }) => {
         return (
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Visitor Passes</h3>
-                <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                  Generate Pass
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Create Visitor Pass</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Visitor Name</label>
+                  <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={passForm.visitorName}
+                    onChange={(e)=>setPassForm({...passForm, visitorName: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Phone</label>
+                  <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={passForm.visitorPhone}
+                    onChange={(e)=>setPassForm({...passForm, visitorPhone: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Email (optional)</label>
+                  <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={passForm.visitorEmail}
+                    onChange={(e)=>setPassForm({...passForm, visitorEmail: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Valid For (hours)</label>
+                  <input type="number" min="1" className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={passForm.validHours}
+                    onChange={(e)=>setPassForm({...passForm, validHours: e.target.value})}
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button onClick={createPass} disabled={creatingPass || !passForm.visitorName || !passForm.visitorPhone}
+                  className={`px-4 py-2 rounded-lg text-white ${creatingPass ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                  {creatingPass ? 'Creating...' : 'Generate Pass'}
                 </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 border dark:border-gray-700 rounded-lg">
-                  <div className="flex justify-between items-start mb-2">
-                    <h4 className="font-medium text-gray-900 dark:text-white">John Doe</h4>
-                    <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">Active</span>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">My Passes</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {myPasses.length === 0 ? (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">No passes yet.</p>
+                ) : myPasses.map((p) => (
+                  <div key={p._id} className="p-4 border dark:border-gray-700 rounded-lg">
+                    <div className="flex justify-between items-start mb-2">
+                      <h4 className="font-medium text-gray-900 dark:text-white">{p.visitorName}</h4>
+                      <span className={`px-2 py-1 rounded text-xs ${p.status==='active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{p.status}</span>
+                    </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Valid until: {new Date(p.validUntil).toLocaleString()}</p>
+                    <div className="mt-3 bg-white dark:bg-gray-700 p-3 rounded text-center border dark:border-gray-600">
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Code</div>
+                      <div className="font-mono text-gray-900 dark:text-white">{p.code}</div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-center">
+                      <img
+                        alt={`QR ${p.code}`}
+                        className="w-32 h-32 border dark:border-gray-600 bg-white"
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(p.code)}`}
+                      />
+                    </div>
                   </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Valid until: Dec 25, 2024 6:00 PM</p>
-                  <div className="mt-2 bg-gray-100 dark:bg-gray-700 p-2 rounded text-center">
-                    <QrCode className="w-16 h-16 mx-auto text-gray-600" />
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>
@@ -208,52 +497,42 @@ const ResidentDashboard = ({ user, onLogout }) => {
             </div>
           </div>
         )
-      case 'profile':
+      case 'profile': {
+        const view = profile || form
         return (
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Profile Information</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Name</label>
-                  <input 
-                    type="text" 
-                    value={user.name || ''} 
-                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    readOnly 
-                  />
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Name</p>
+                  <p className="mt-1 font-medium text-gray-900 dark:text-white">{(view?.name || user.name || 'N/A')}</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Email</label>
-                  <input 
-                    type="email" 
-                    value={user.email || ''} 
-                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    readOnly 
-                  />
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Email</p>
+                  <p className="mt-1 font-medium text-gray-900 dark:text-white">{(view?.email || user.email || 'N/A')}</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Flat Number</label>
-                  <input 
-                    type="text" 
-                    value={user.flatNumber || 'N/A'} 
-                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    readOnly 
-                  />
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Phone</p>
+                  <p className="mt-1 font-medium text-gray-900 dark:text-white">{(view?.phone || 'N/A')}</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Building</label>
-                  <input 
-                    type="text" 
-                    value={user.building || 'N/A'} 
-                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    readOnly 
-                  />
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Owner Name</p>
+                  <p className="mt-1 font-medium text-gray-900 dark:text-white">{(view?.ownerName || 'N/A')}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Flat Number</p>
+                  <p className="mt-1 font-medium text-gray-900 dark:text-white">{(view?.flatNumber || user.flatNumber || 'N/A')}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Building</p>
+                  <p className="mt-1 font-medium text-gray-900 dark:text-white">{(view?.building || user.building || 'N/A')}</p>
                 </div>
               </div>
             </div>
           </div>
         )
+      }
       default:
         return <div>Content not found</div>
     }
@@ -261,6 +540,23 @@ const ResidentDashboard = ({ user, onLogout }) => {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      {/* Restriction gate */}
+      {!profileLoading && profile?.isRestricted && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md p-6 text-center">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Access Restricted</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Your account has been restricted by the admin. Please contact the administration for assistance.
+            </p>
+            <button
+              onClick={onLogout}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="bg-white dark:bg-gray-800 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -285,38 +581,80 @@ const ResidentDashboard = ({ user, onLogout }) => {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex flex-col lg:flex-row gap-8">
-          {/* Sidebar */}
-          <div className="lg:w-64">
-            <nav className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-              <ul className="space-y-2">
-                {menuItems.map((item) => {
-                  const Icon = item.icon
-                  return (
-                    <li key={item.id}>
-                      <button
-                        onClick={() => setActiveTab(item.id)}
-                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${
-                          activeTab === item.id
-                            ? 'bg-blue-100 dark:bg-blue-900/20 text-blue-600'
-                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                        }`}
-                      >
-                        <Icon className="w-5 h-5" />
-                        {item.label}
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            </nav>
-          </div>
-
           {/* Main Content */}
           <div className="flex-1">
             {renderContent()}
           </div>
         </div>
       </div>
+
+      {/* Profile completion modal */}
+      {!profileLoading && needsProfile && !hasSaved && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl p-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-1">Complete your profile</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Please provide the required details to continue using the app.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
+                <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={user.name || form.name} readOnly />
+                {errors.name && <p className="mt-1 text-xs text-red-600">{errors.name}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                <input type="email" className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={user.email || form.email} readOnly />
+                {errors.email && <p className="mt-1 text-xs text-red-600">{errors.email}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone</label>
+                <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={form.phone} onChange={(e)=>setForm({...form, phone: e.target.value})} />
+                {errors.phone && <p className="mt-1 text-xs text-red-600">{errors.phone}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Owner Name</label>
+                <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={form.ownerName} onChange={(e)=>setForm({...form, ownerName: e.target.value})} />
+                {errors.ownerName && <p className="mt-1 text-xs text-red-600">{errors.ownerName}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Flat Number</label>
+                <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={form.flatNumber} onChange={(e)=>setForm({...form, flatNumber: e.target.value})} />
+                {errors.flatNumber && <p className="mt-1 text-xs text-red-600">{errors.flatNumber}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Building</label>
+                <select
+                  className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={form.building}
+                  onChange={(e)=>setForm({...form, building: e.target.value})}
+                >
+                  <option value="">Select Building</option>
+                  <option value="A">Building A</option>
+                  <option value="B">Building B</option>
+                  <option value="C">Building C</option>
+                </select>
+                {errors.building && <p className="mt-1 text-xs text-red-600">{errors.building}</p>}
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button disabled className="px-4 py-2 rounded-lg text-sm text-gray-500 cursor-not-allowed">Skip</button>
+              <button
+                onClick={handleSaveProfile}
+                disabled={!isProfileComplete || saving || Object.keys(errors).length > 0}
+                className={`px-4 py-2 rounded-lg text-white ${(!isProfileComplete||saving) ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+              >
+                {saving ? 'Saving...' : 'Save and Continue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

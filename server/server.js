@@ -48,6 +48,26 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 
 const User = mongoose.model('User', userSchema)
 
+// Resident Schema
+const residentSchema = new mongoose.Schema({
+  authUserId: { type: String, required: true, index: true, unique: true },
+  name: { type: String, default: '' },
+  email: { type: String, default: '' },
+  phone: { type: String, default: '' },
+  ownerName: { type: String, default: '' },
+  flatNumber: { type: String, default: '' },
+  building: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+})
+
+residentSchema.pre('save', function(next) {
+  this.updatedAt = Date.now()
+  next()
+})
+
+const Resident = mongoose.model('Resident', residentSchema)
+
 // Email configuration
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -245,6 +265,39 @@ app.post('/api/auth/staff', async (req, res) => {
 
   } catch (error) {
     console.error('Auth error:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Resident profile routes
+// Get resident profile by Supabase auth user id
+app.get('/api/residents/:authUserId', async (req, res) => {
+  try {
+    const { authUserId } = req.params
+    const resident = await Resident.findOne({ authUserId })
+    if (!resident) {
+      return res.json({ success: true, resident: null })
+    }
+    res.json({ success: true, resident })
+  } catch (error) {
+    console.error('Get resident error:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Create or update resident profile
+app.post('/api/residents', async (req, res) => {
+  try {
+    const { authUserId, name, email, phone, ownerName, flatNumber, building } = req.body
+    if (!authUserId) return res.status(400).json({ success: false, error: 'authUserId is required' })
+
+    const update = { name, email, phone, ownerName, flatNumber, building, updatedAt: Date.now() }
+    const options = { new: true, upsert: true, setDefaultsOnInsert: true }
+    const resident = await Resident.findOneAndUpdate({ authUserId }, update, options)
+
+    res.json({ success: true, resident, message: 'Resident profile saved' })
+  } catch (error) {
+    console.error('Upsert resident error:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })

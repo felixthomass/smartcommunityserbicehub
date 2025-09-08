@@ -46,7 +46,7 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
         { id: 'complaints', label: 'Complaints', icon: FileText }
       ],
       admin: [
-        { id: 'users', label: 'User Management', icon: Users },
+        { id: 'admin-users', label: 'User Management', icon: Users },
         { id: 'staff-security', label: 'Staff/Security', icon: Shield },
         { id: 'maintenance', label: 'Maintenance', icon: Wrench },
         { id: 'visitors', label: 'Visitor Management', icon: QrCode },
@@ -59,6 +59,7 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
       ],
       security: [
         { id: 'visitors', label: 'Visitor Log', icon: Eye },
+        { id: 'scan-pass', label: 'Scan Pass', icon: QrCode },
         { id: 'security', label: 'Security', icon: Shield }
       ]
     }

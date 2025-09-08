@@ -1,7 +1,7 @@
 import React from 'react'
 import { LogOut } from 'lucide-react'
 
-const StaffDashboard = ({ user, onLogout }) => {
+const StaffDashboard = ({ user, onLogout, currentPage }) => {
   // Safety check for user object
   if (!user) {
     return (
@@ -34,10 +34,22 @@ const StaffDashboard = ({ user, onLogout }) => {
         </div>
       </header>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-          <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Staff Dashboard</h3>
-          <p className="text-gray-600 dark:text-gray-400">Staff dashboard features coming soon!</p>
-        </div>
+        {currentPage === 'tasks' ? (
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">My Tasks</h3>
+            <p className="text-gray-600 dark:text-gray-400">Tasks list (coming soon).</p>
+          </div>
+        ) : currentPage === 'maintenance' ? (
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Maintenance</h3>
+            <p className="text-gray-600 dark:text-gray-400">Maintenance tools (coming soon).</p>
+          </div>
+        ) : (
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Staff Dashboard</h3>
+            <p className="text-gray-600 dark:text-gray-400">Select a page from the sidebar.</p>
+          </div>
+        )}
       </div>
     </div>
   )

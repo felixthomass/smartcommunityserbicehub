@@ -22,7 +22,7 @@ const Sidebar = ({ user, currentPage, setCurrentPage, isCollapsed, setIsCollapse
   const menuItems = {
     admin: [
       { id: 'dashboard', label: 'Dashboard', icon: Home },
-      { id: 'users', label: 'User Management', icon: Users },
+      { id: 'admin-users', label: 'User Management', icon: Users },
       { id: 'staff-security', label: 'Staff/Security', icon: Shield },
       { id: 'maintenance', label: 'Maintenance', icon: Wrench },
       { id: 'visitors', label: 'Visitor Management', icon: QrCode },
@@ -50,6 +50,7 @@ const Sidebar = ({ user, currentPage, setCurrentPage, isCollapsed, setIsCollapse
     security: [
       { id: 'dashboard', label: 'Dashboard', icon: Home },
       { id: 'visitors', label: 'Visitor Management', icon: QrCode },
+      { id: 'scan-pass', label: 'Scan Pass', icon: QrCode },
       { id: 'incidents', label: 'Security Incidents', icon: Shield },
       { id: 'reports', label: 'Reports', icon: BarChart3 },
       { id: 'profile', label: 'Profile', icon: Settings }

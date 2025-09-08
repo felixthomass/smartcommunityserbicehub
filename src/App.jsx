@@ -122,15 +122,15 @@ const AppContent = () => {
   const getDashboard = () => {
     switch (user.role) {
       case 'resident':
-        return <ResidentDashboard user={user} onLogout={logout} />
+        return <ResidentDashboard user={user} onLogout={logout} currentPage={currentPage} />
       case 'admin':
         return <AdminDashboard user={user} onLogout={logout} currentPage={currentPage} />
       case 'staff':
-        return <StaffDashboard user={user} onLogout={logout} />
+        return <StaffDashboard user={user} onLogout={logout} currentPage={currentPage} />
       case 'security':
-        return <SecurityDashboard user={user} onLogout={logout} />
+        return <SecurityDashboard user={user} onLogout={logout} currentPage={currentPage} />
       default:
-        return <ResidentDashboard user={user} onLogout={logout} />
+        return <ResidentDashboard user={user} onLogout={logout} currentPage={currentPage} />
     }
   }
 
@@ -139,11 +139,8 @@ const AppContent = () => {
       case 'profile':
         return <UserProfile user={user} onBack={() => setCurrentPage('dashboard')} />
       case 'admin-users':
-        return user.role === 'admin' ? (
-          <AdminUserManagement onBack={() => setCurrentPage('dashboard')} />
-        ) : (
-          getDashboard()
-        )
+        // Let AdminDashboard handle the admin-users view internally
+        return getDashboard()
       case 'staff-security':
         // Staff/Security management is now handled within AdminDashboard
         return getDashboard()
