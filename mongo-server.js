@@ -74,6 +74,8 @@ const visitorLogSchema = new mongoose.Schema({
   hostName: { type: String, required: true },
   hostFlat: { type: String, required: true },
   hostPhone: { type: String, required: true },
+  hostBuilding: { type: String, default: '' },
+  hostAuthUserId: { type: String, default: '' },
   entryTime: { type: Date, default: Date.now },
   exitTime: { type: Date },
   status: { type: String, default: 'checked_in', enum: ['checked_in', 'checked_out'] },
@@ -394,6 +396,94 @@ app.get('/api/visitors/stats', async (req, res) => {
   }
 })
 
+// ===== Chat Routes =====
+// Create or fetch DM room
+app.post('/api/chat/rooms', async (req, res) => {
+  try {
+    const { type = 'dm', memberAuthUserIds = [], name } = req.body
+    if (!Array.isArray(memberAuthUserIds) || memberAuthUserIds.length < 2) {
+      // allow group bootstrap with 1 or more members
+      if (type !== 'group') {
+        return res.status(400).json({ success: false, error: 'memberAuthUserIds must have at least 2 members' })
+      }
+    }
+    let room
+    if (type === 'dm') {
+      room = await ChatRoom.findOne({ type: 'dm', memberAuthUserIds: { $all: memberAuthUserIds, $size: 2 } })
+      if (!room) {
+        room = new ChatRoom({ type, memberAuthUserIds, name: name || '' })
+        await room.save()
+      }
+    } else if (type === 'group') {
+      // find the named group; if exists, add members; else create
+      const query = name ? { type: 'group', name } : { type: 'group' }
+      room = await ChatRoom.findOne(query)
+      if (!room) {
+        room = new ChatRoom({ type: 'group', name: name || 'Residents Group', memberAuthUserIds })
+        await room.save()
+      } else if (memberAuthUserIds && memberAuthUserIds.length) {
+        await ChatRoom.updateOne({ _id: room._id }, { $addToSet: { memberAuthUserIds: { $each: memberAuthUserIds } }, $set: { updatedAt: new Date() } })
+        room = await ChatRoom.findById(room._id)
+      }
+    }
+    res.json({ success: true, room })
+  } catch (e) { res.status(500).json({ success: false, error: e.message }) }
+})
+
+// List rooms for a user
+app.get('/api/chat/rooms', async (req, res) => {
+  try {
+    const { me } = req.query
+    if (!me) return res.status(400).json({ success: false, error: 'me required' })
+    const rooms = await ChatRoom.find({ memberAuthUserIds: me }).sort({ lastMessageAt: -1 })
+    res.json({ success: true, rooms })
+  } catch (e) { res.status(500).json({ success: false, error: e.message }) }
+})
+
+// List messages
+app.get('/api/chat/messages', async (req, res) => {
+  try {
+    const { roomId, before, limit = 30 } = req.query
+    if (!roomId) return res.status(400).json({ success: false, error: 'roomId required' })
+    const query = { roomId }
+    if (before) query.createdAt = { $lt: new Date(before) }
+    const messages = await ChatMessage.find(query).sort({ createdAt: -1 }).limit(Number(limit))
+    res.json({ success: true, messages: messages.reverse() })
+  } catch (e) { res.status(500).json({ success: false, error: e.message }) }
+})
+
+// Create message
+app.post('/api/chat/messages', async (req, res) => {
+  try {
+    const { roomId, senderAuthUserId, senderName, text, media } = req.body
+    if (!roomId || !senderAuthUserId) return res.status(400).json({ success: false, error: 'roomId and senderAuthUserId required' })
+    const msg = new ChatMessage({ roomId, senderAuthUserId, senderName, text, media })
+    await msg.save()
+    await ChatRoom.findByIdAndUpdate(roomId, { lastMessageAt: new Date() })
+    res.status(201).json({ success: true, message: msg })
+  } catch (e) { res.status(500).json({ success: false, error: e.message }) }
+})
+
+// Edit message
+app.put('/api/chat/messages/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const update = { ...req.body, editedAt: new Date() }
+    const message = await ChatMessage.findByIdAndUpdate(id, update, { new: true })
+    if (!message) return res.status(404).json({ success: false, error: 'Message not found' })
+    res.json({ success: true, message })
+  } catch (e) { res.status(500).json({ success: false, error: e.message }) }
+})
+
+// Soft delete message
+app.delete('/api/chat/messages/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const message = await ChatMessage.findByIdAndUpdate(id, { deletedAt: new Date() }, { new: true })
+    if (!message) return res.status(404).json({ success: false, error: 'Message not found' })
+    res.json({ success: true, message })
+  } catch (e) { res.status(500).json({ success: false, error: e.message }) }
+})
 // Resident profile routes
 // Get resident profile by auth user id
 app.get('/api/residents/:authUserId', async (req, res) => {
@@ -460,8 +550,11 @@ const complaintSchema = new mongoose.Schema({
   category: { type: String, default: 'general' },
   priority: { type: String, default: 'normal', enum: ['low', 'normal', 'high'] },
   status: { type: String, default: 'open', enum: ['open', 'resolved'] },
+  resolvedAt: { type: Date },
   residentAuthUserId: { type: String, required: true },
   residentName: { type: String, default: '' },
+  residentEmail: { type: String, default: '' },
+  residentPhone: { type: String, default: '' },
   flatNumber: { type: String, default: '' },
   building: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
@@ -506,11 +599,27 @@ app.put('/api/complaints/:id', async (req, res) => {
   try {
     const { id } = req.params
     const update = { ...req.body, updatedAt: Date.now() }
+    if (update.status === 'resolved' && !update.resolvedAt) {
+      update.resolvedAt = new Date()
+    }
     const complaint = await Complaint.findByIdAndUpdate(id, update, { new: true })
     if (!complaint) return res.status(404).json({ success: false, error: 'Complaint not found' })
     res.json({ success: true, complaint })
   } catch (error) {
     console.error('❌ Error updating complaint:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Delete complaint
+app.delete('/api/complaints/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const deleted = await Complaint.findByIdAndDelete(id)
+    if (!deleted) return res.status(404).json({ success: false, error: 'Complaint not found' })
+    res.json({ success: true, complaint: deleted })
+  } catch (error) {
+    console.error('❌ Error deleting complaint:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })
@@ -523,6 +632,7 @@ const visitorPassSchema = new mongoose.Schema({
   visitorEmail: { type: String },
   hostAuthUserId: { type: String, required: true },
   hostName: { type: String, default: '' },
+  hostPhone: { type: String, default: '' },
   building: { type: String, default: '' },
   flatNumber: { type: String, default: '' },
   validUntil: { type: Date, required: true },
@@ -538,10 +648,42 @@ visitorPassSchema.pre('save', function(next) {
 
 const VisitorPass = mongoose.model('VisitorPass', visitorPassSchema)
 
+// Chat schemas
+const chatRoomSchema = new mongoose.Schema({
+  type: { type: String, enum: ['dm', 'group'], default: 'dm' },
+  memberAuthUserIds: { type: [String], index: true },
+  name: { type: String, default: '' },
+  lastMessageAt: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+})
+chatRoomSchema.pre('save', function(next){ this.updatedAt = Date.now(); next() })
+const ChatRoom = mongoose.model('ChatRoom', chatRoomSchema)
+
+const chatMessageSchema = new mongoose.Schema({
+  roomId: { type: mongoose.Schema.Types.ObjectId, ref: 'ChatRoom', index: true, required: true },
+  senderAuthUserId: { type: String, required: true, index: true },
+  senderName: { type: String, default: '' },
+  text: { type: String },
+  media: {
+    type: { type: String, enum: ['image', 'video'] },
+    path: { type: String },
+    thumbPath: { type: String },
+    size: { type: Number },
+    width: { type: Number },
+    height: { type: Number },
+    durationMs: { type: Number }
+  },
+  createdAt: { type: Date, default: Date.now },
+  editedAt: { type: Date },
+  deletedAt: { type: Date }
+})
+const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema)
+
 // Create visitor pass
 app.post('/api/passes', async (req, res) => {
   try {
-    const { visitorName, visitorPhone, visitorEmail, hostAuthUserId, hostName, building, flatNumber, validUntil } = req.body
+    const { visitorName, visitorPhone, visitorEmail, hostAuthUserId, hostName, hostPhone, building, flatNumber, validUntil } = req.body
     if (!visitorName || !visitorPhone || !hostAuthUserId || !validUntil) {
       return res.status(400).json({ success: false, error: 'Missing required fields' })
     }
@@ -553,6 +695,7 @@ app.post('/api/passes', async (req, res) => {
       visitorEmail,
       hostAuthUserId,
       hostName,
+      hostPhone,
       building,
       flatNumber,
       validUntil: new Date(validUntil)
@@ -587,6 +730,64 @@ app.get('/api/passes', async (req, res) => {
     res.json({ success: true, passes })
   } catch (error) {
     console.error('❌ Error listing passes:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Mark pass as used
+app.post('/api/passes/:code/use', async (req, res) => {
+  try {
+    const { code } = req.params
+    const pass = await VisitorPass.findOne({ code })
+    if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
+    if (pass.status !== 'active') {
+      return res.status(400).json({ success: false, error: 'Pass is not active' })
+    }
+    pass.status = 'used'
+    pass.updatedAt = new Date()
+    const saved = await pass.save()
+    res.json({ success: true, pass: saved })
+  } catch (error) {
+    console.error('❌ Error marking pass used:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Expire a pass (manually revoke/cancel)
+app.post('/api/passes/:code/expire', async (req, res) => {
+  try {
+    const { code } = req.params
+    const pass = await VisitorPass.findOne({ code })
+    if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
+    if (pass.status === 'expired') {
+      return res.json({ success: true, pass })
+    }
+    pass.status = 'expired'
+    pass.updatedAt = new Date()
+    const saved = await pass.save()
+    res.json({ success: true, pass: saved })
+  } catch (error) {
+    console.error('❌ Error expiring pass:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Generic status update
+app.post('/api/passes/:code/status', async (req, res) => {
+  try {
+    const { code } = req.params
+    const { status } = req.body || {}
+    if (!['active', 'used', 'expired'].includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid status' })
+    }
+    const pass = await VisitorPass.findOne({ code })
+    if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
+    pass.status = status
+    pass.updatedAt = new Date()
+    const saved = await pass.save()
+    res.json({ success: true, pass: saved })
+  } catch (error) {
+    console.error('❌ Error updating pass status:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })

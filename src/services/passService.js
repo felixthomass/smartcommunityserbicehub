@@ -12,9 +12,30 @@ export const passService = {
     if (!res.ok) throw new Error('Failed to create pass')
     return res.json()
   },
+  async markPassUsed(code) {
+    const res = await fetch(`${API_BASE}/api/passes/${encodeURIComponent(code)}/use`, {
+      method: 'POST'
+    })
+    if (!res.ok) throw new Error('Failed to mark pass used')
+    return res.json()
+  },
   async getPassByCode(code) {
     const res = await fetch(`${API_BASE}/api/passes/${encodeURIComponent(code)}`)
     if (!res.ok) throw new Error('Pass not found')
+    return res.json()
+  },
+  async expirePass(code) {
+    const res = await fetch(`${API_BASE}/api/passes/${encodeURIComponent(code)}/expire`, { method: 'POST' })
+    if (!res.ok) throw new Error('Failed to expire pass')
+    return res.json()
+  },
+  async updatePassStatus(code, status) {
+    const res = await fetch(`${API_BASE}/api/passes/${encodeURIComponent(code)}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    })
+    if (!res.ok) throw new Error('Failed to update pass status')
     return res.json()
   },
   async listPasses(hostAuthUserId) {

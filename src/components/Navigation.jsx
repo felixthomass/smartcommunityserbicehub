@@ -43,7 +43,8 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
       resident: [
         { id: 'maintenance', label: 'Maintenance', icon: Wrench },
         { id: 'visitors', label: 'Visitor Pass', icon: QrCode },
-        { id: 'complaints', label: 'Complaints', icon: FileText }
+        { id: 'complaints', label: 'Complaints', icon: FileText },
+        { id: 'chat', label: 'Chat', icon: Eye }
       ],
       admin: [
         { id: 'admin-users', label: 'User Management', icon: Users },

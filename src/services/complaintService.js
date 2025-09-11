@@ -28,6 +28,13 @@ export const complaintService = {
     })
     if (!res.ok) throw new Error('Failed to update complaint')
     return res.json()
+  },
+  async deleteComplaint(id) {
+    const res = await fetch(`${API_BASE}/api/complaints/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    })
+    if (!res.ok) throw new Error('Failed to delete complaint')
+    return res.json()
   }
 }
 

@@ -302,6 +302,14 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       })
 
       if (result.success) {
+        try {
+          // If this visitor was logged via a QR pass, try to mark that pass as used/expired
+          const idNumber = (result.data?.idNumber || '').toString()
+          if (idNumber.startsWith('QR_PASS_')) {
+            const code = idNumber.replace('QR_PASS_', '')
+            await passService.updatePassStatus(code, 'used')
+          }
+        } catch (_) {}
         loadVisitorLogs()
         loadStats()
         alert('Visitor checked out successfully!')
@@ -895,6 +903,14 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                   <Camera className="w-5 h-5" />
                   Take Photo
                 </button>
+                <button
+                  type="button"
+                  onClick={() => document.getElementById('qr-image-upload').click()}
+                  className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
+                >
+                  <QrCode className="w-5 h-5" />
+                  Upload QR Image
+                </button>
               </div>
 
               <input
@@ -903,6 +919,53 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                 accept="image/*,.pdf"
                 onChange={handleFileSelect}
                 className="hidden"
+              />
+
+              <input
+                id="qr-image-upload"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={async (e) => {
+                  try {
+                    const file = e.target.files && e.target.files[0]
+                    if (!file) return
+                    // Use a lightweight client-side QR decoder via a CDN
+                    if (!window.qrcodeParserLoaded) {
+                      await new Promise((resolve, reject) => {
+                        const s = document.createElement('script')
+                        s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
+                        s.onload = () => { window.qrcodeParserLoaded = true; resolve() }
+                        s.onerror = reject
+                        document.body.appendChild(s)
+                      })
+                    }
+                    const arrayBuffer = await file.arrayBuffer()
+                    const blob = new Blob([arrayBuffer])
+                    const img = new Image()
+                    img.onload = () => {
+                      const canvas = document.createElement('canvas')
+                      canvas.width = img.width
+                      canvas.height = img.height
+                      const ctx = canvas.getContext('2d')
+                      ctx.drawImage(img, 0, 0)
+                      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+                      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
+                      if (code && code.data) {
+                        setScanCode(code.data.toUpperCase())
+                        alert('QR code detected from image!')
+                      } else {
+                        alert('Unable to read QR from this image. Try another one.')
+                      }
+                    }
+                    img.onerror = () => alert('Unable to load selected image.')
+                    img.src = URL.createObjectURL(blob)
+                  } catch (err) {
+                    alert('Failed to process QR image.')
+                  } finally {
+                    e.target.value = ''
+                  }
+                }}
               />
 
               {previewUrl && (
@@ -1255,7 +1318,7 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                 <div className="mt-6 border dark:border-gray-700 rounded-lg p-4">
                   <h4 className="font-medium text-gray-900 dark:text-white mb-2">Pass Details</h4>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Visitor: {scannedPass.visitorName} ({scannedPass.visitorPhone})</p>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Host: {scannedPass.hostName} • {scannedPass.building}-{scannedPass.flatNumber}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Host: {scannedPass.hostName} • {scannedPass.building || '-'}-{scannedPass.flatNumber || '-'} • {scannedPass.hostPhone || 'N/A'}</p>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Valid until: {new Date(scannedPass.validUntil).toLocaleString()}</p>
                   <div className="mt-4 flex gap-3">
                     <button
@@ -1271,11 +1334,18 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                             hostName: scannedPass.hostName,
                             hostFlat: `${scannedPass.building || '-'}-${scannedPass.flatNumber || '-'}`,
                             hostPhone: scannedPass.hostPhone || 'N/A',
+                            hostBuilding: scannedPass.building || '',
+                            hostAuthUserId: scannedPass.hostAuthUserId || scannedPass.hostAuthUserId,
                             vehicleNumber: '',
                             notes: 'Logged from QR pass',
                             securityOfficer: user.name || user.email
                           })
                           if (result.success) {
+                            try {
+                              await passService.markPassUsed(scannedPass.code)
+                            } catch (e) {
+                              console.warn('Failed to mark pass used:', e)
+                            }
                             alert('Visitor logged successfully')
                             setScannedPass(null)
                             setScanCode('')

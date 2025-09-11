@@ -30,8 +30,15 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [filterRole, setFilterRole] = useState('all')
   const [complaints, setComplaints] = useState([])
   const [complaintsLoading, setComplaintsLoading] = useState(false)
+  const [complaintSearch, setComplaintSearch] = useState('')
+  const [complaintStatus, setComplaintStatus] = useState('all') // all | open | resolved
   const [visitorLogs, setVisitorLogs] = useState([])
   const [visitorLoading, setVisitorLoading] = useState(false)
+  const [selectedVisitor, setSelectedVisitor] = useState(null)
+  const [visitorSearch, setVisitorSearch] = useState('')
+  const [visitorStatus, setVisitorStatus] = useState('all') // all | checked_in | checked_out
+  const [visitorDate, setVisitorDate] = useState('')
+  const [visitorBuilding, setVisitorBuilding] = useState('all')
 
   // Safety check for user object
   if (!user) {
@@ -637,6 +644,80 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
               </form>
             )}
           </div>
+          {selectedVisitor && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Visitor Details</h3>
+                  <button
+                    onClick={() => setSelectedVisitor(null)}
+                    className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="space-y-6">
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Visitor Information</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Name:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.visitorName}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Phone:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.visitorPhone}</span></div>
+                        {selectedVisitor.visitorEmail && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Email:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.visitorEmail}</span></div>)}
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">ID Type:</span><span className="font-medium text-gray-900 dark:text-white capitalize">{(selectedVisitor.idType||'').replace('_',' ')}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">ID Number:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.idNumber}</span></div>
+                        {selectedVisitor.vehicleNumber && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Vehicle:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.vehicleNumber}</span></div>)}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Host Information</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Host Name:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostName}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Flat/Unit:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostFlat}</span></div>
+                        {(selectedVisitor.hostBuilding || selectedVisitor.building) && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Building:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostBuilding || selectedVisitor.building}</span></div>)}
+                        {selectedVisitor.hostAuthUserId && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Host ID:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostAuthUserId}</span></div>)}
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Host Phone:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostPhone}</span></div>
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Visit Information</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Purpose:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.purpose}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Entry Time:</span><span className="font-medium text-gray-900 dark:text-white">{new Date(selectedVisitor.entryTime).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Status:</span><span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${selectedVisitor.status==='checked_in' ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}>{selectedVisitor.status==='checked_in' ? 'Inside' : 'Checked Out'}</span></div>
+                        {selectedVisitor.exitTime && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Exit Time:</span><span className="font-medium text-gray-900 dark:text-white">{new Date(selectedVisitor.exitTime).toLocaleString()}</span></div>)}
+                        {selectedVisitor.notes && (<div><span className="text-gray-600 dark:text-gray-400">Notes:</span><p className="mt-1 text-gray-900 dark:text-white">{selectedVisitor.notes}</p></div>)}
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">ID Proof Document</h4>
+                    {selectedVisitor.documentPhoto ? (
+                      <div className="space-y-4">
+                        <div className="border rounded-lg overflow-hidden">
+                          <img src={selectedVisitor.documentPhoto} alt="ID Proof Document" className="w-full h-auto max-h-96 object-contain bg-gray-50 dark:bg-gray-700" onError={(e)=>{e.target.style.display='none'; e.target.nextSibling.style.display='block'}} />
+                          <div className="hidden p-8 text-center text-gray-500 dark:text-gray-400">
+                            <p>Unable to load image</p>
+                            <a href={selectedVisitor.documentPhoto} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Open in new tab</a>
+                          </div>
+                        </div>
+                        <div>
+                          <a href={selectedVisitor.documentPhoto} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">View Full Size</a>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 text-center">
+                        <p className="text-gray-500 dark:text-gray-400">No document uploaded</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button onClick={() => setSelectedVisitor(null)} className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">Close</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )
     }
@@ -703,19 +784,78 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
               <p className="text-gray-600 dark:text-gray-400">No visitor logs found.</p>
             ) : (
               <div className="overflow-x-auto">
+                {/* Filters */}
+                <div className="flex flex-col xl:flex-row gap-3 items-start xl:items-center justify-between mb-3">
+                  <div className="flex-1 relative">
+                    <input
+                      value={visitorSearch}
+                      onChange={(e)=>setVisitorSearch(e.target.value)}
+                      placeholder="Search by visitor, phone, host, flat, purpose..."
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <div className="flex gap-3 flex-wrap">
+                    <select
+                      value={visitorStatus}
+                      onChange={(e)=>setVisitorStatus(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="all">All Status</option>
+                      <option value="checked_in">Checked In</option>
+                      <option value="checked_out">Checked Out</option>
+                    </select>
+                    <input
+                      type="date"
+                      value={visitorDate}
+                      onChange={(e)=>setVisitorDate(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                    <select
+                      value={visitorBuilding}
+                      onChange={(e)=>setVisitorBuilding(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="all">All Buildings</option>
+                      <option value="A">Building A</option>
+                      <option value="B">Building B</option>
+                      <option value="C">Building C</option>
+                    </select>
+                    <button
+                      onClick={()=>{ setVisitorSearch(''); setVisitorStatus('all'); setVisitorDate(''); setVisitorBuilding('all') }}
+                      className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+                    >Clear</button>
+                  </div>
+                </div>
                 <table className="w-full table-auto">
                   <thead>
                     <tr className="border-b border-gray-200 dark:border-gray-700">
                       <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Visitor</th>
-                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Host</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Resident (Host)</th>
                       <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Purpose</th>
                       <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Entry Time</th>
                       <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Status</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {visitorLogs.map((log) => (
-                      <tr key={log._id} className="border-b border-gray-100 dark:border-gray-700">
+                    {visitorLogs
+                      .filter(log => visitorStatus==='all' ? true : log.status === visitorStatus)
+                      .filter(log => visitorBuilding==='all' ? true : (log.hostBuilding || log.building) === visitorBuilding)
+                      .filter(log => {
+                        if (!visitorDate) return true
+                        const d = new Date(log.entryTime)
+                        return d.toISOString().slice(0,10) === visitorDate
+                      })
+                      .filter(log => {
+                        const q = visitorSearch.trim().toLowerCase()
+                        if (!q) return true
+                        const hay = [
+                          log.visitorName, log.visitorPhone, log.hostName, log.hostFlat, log.purpose
+                        ].map(x => (x||'').toString().toLowerCase()).join(' ')
+                        return hay.includes(q)
+                      })
+                      .map((log) => (
+                      <tr key={log._id} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer" onClick={() => setSelectedVisitor(log)}>
                         <td className="py-3 px-4">
                           <div>
                             <p className="font-medium text-gray-900 dark:text-white">{log.visitorName}</p>
@@ -724,8 +864,16 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                         </td>
                         <td className="py-3 px-4">
                           <div>
-                            <p className="font-medium text-gray-900 dark:text-white">{log.hostName}</p>
-                            <p className="text-sm text-gray-600 dark:text-gray-400">{log.hostFlat}</p>
+                            <p className="font-medium text-gray-900 dark:text-white">{log.hostName || log.residentName || 'Unknown'}</p>
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                              {[
+                                (log.building || log.hostBuilding),
+                                (log.hostFlat || log.flatNumber)
+                              ].filter(Boolean).join('-') || '—'}
+                            </p>
+                            {log.hostAuthUserId && (
+                              <p className="text-xs text-gray-500 dark:text-gray-500">ID: {log.hostAuthUserId}</p>
+                            )}
                           </div>
                         </td>
                         <td className="py-3 px-4">
@@ -745,6 +893,15 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                             {log.status === 'checked_in' ? 'Inside' : 'Checked Out'}
                           </span>
                         </td>
+                        <td className="py-3 px-4">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setSelectedVisitor(log) }}
+                            className="p-2 text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+                            title="View Details"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -752,6 +909,80 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
               </div>
             )}
           </div>
+          {selectedVisitor && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Visitor Details</h3>
+                  <button
+                    onClick={() => setSelectedVisitor(null)}
+                    className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <div className="space-y-6">
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Visitor Information</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Name:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.visitorName}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Phone:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.visitorPhone}</span></div>
+                        {selectedVisitor.visitorEmail && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Email:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.visitorEmail}</span></div>)}
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">ID Type:</span><span className="font-medium text-gray-900 dark:text-white capitalize">{(selectedVisitor.idType||'').replace('_',' ')}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">ID Number:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.idNumber}</span></div>
+                        {selectedVisitor.vehicleNumber && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Vehicle:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.vehicleNumber}</span></div>)}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Host Information</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Host Name:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostName}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Flat/Unit:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostFlat}</span></div>
+                        {(selectedVisitor.hostBuilding || selectedVisitor.building) && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Building:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostBuilding || selectedVisitor.building}</span></div>)}
+                        {selectedVisitor.hostAuthUserId && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Host ID:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostAuthUserId}</span></div>)}
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Host Phone:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.hostPhone}</span></div>
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Visit Information</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Purpose:</span><span className="font-medium text-gray-900 dark:text-white">{selectedVisitor.purpose}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Entry Time:</span><span className="font-medium text-gray-900 dark:text-white">{new Date(selectedVisitor.entryTime).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Status:</span><span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${selectedVisitor.status==='checked_in' ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}>{selectedVisitor.status==='checked_in' ? 'Inside' : 'Checked Out'}</span></div>
+                        {selectedVisitor.exitTime && (<div className="flex justify-between"><span className="text-gray-600 dark:text-gray-400">Exit Time:</span><span className="font-medium text-gray-900 dark:text-white">{new Date(selectedVisitor.exitTime).toLocaleString()}</span></div>)}
+                        {selectedVisitor.notes && (<div><span className="text-gray-600 dark:text-gray-400">Notes:</span><p className="mt-1 text-gray-900 dark:text-white">{selectedVisitor.notes}</p></div>)}
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">ID Proof Document</h4>
+                    {selectedVisitor.documentPhoto ? (
+                      <div className="space-y-4">
+                        <div className="border rounded-lg overflow-hidden">
+                          <img src={selectedVisitor.documentPhoto} alt="ID Proof Document" className="w-full h-auto max-h-96 object-contain bg-gray-50 dark:bg-gray-700" onError={(e)=>{e.target.style.display='none'; e.target.nextSibling.style.display='block'}} />
+                          <div className="hidden p-8 text-center text-gray-500 dark:text-gray-400">
+                            <p>Unable to load image</p>
+                            <a href={selectedVisitor.documentPhoto} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Open in new tab</a>
+                          </div>
+                        </div>
+                        <div>
+                          <a href={selectedVisitor.documentPhoto} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">View Full Size</a>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 text-center">
+                        <p className="text-gray-500 dark:text-gray-400">No document uploaded</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button onClick={() => setSelectedVisitor(null)} className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">Close</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )
     }
@@ -779,26 +1010,72 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
               <p className="text-gray-600 dark:text-gray-400">No complaints found.</p>
             ) : (
               <div className="space-y-3">
-                {complaints.map((c)=> (
+                {/* Filters */}
+                <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between pb-2 border-b dark:border-gray-700">
+                  <div className="flex-1 relative">
+                    <input
+                      value={complaintSearch}
+                      onChange={(e)=>setComplaintSearch(e.target.value)}
+                      placeholder="Search by title, description, resident, email, flat..."
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <select
+                      value={complaintStatus}
+                      onChange={(e)=>setComplaintStatus(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="all">All</option>
+                      <option value="open">Open</option>
+                      <option value="resolved">Resolved</option>
+                    </select>
+                  </div>
+                </div>
+
+                {(complaints
+                  .filter(c => complaintStatus==='all' ? true : c.status===complaintStatus)
+                  .filter(c => {
+                    const q = complaintSearch.trim().toLowerCase()
+                    if (!q) return true
+                    const hay = [
+                      c.title, c.description, c.residentName, c.residentEmail, c.flatNumber, c.building
+                    ].map(x => (x||'').toString().toLowerCase()).join(' ')
+                    return hay.includes(q)
+                  })
+                ).map((c)=> (
                   <div key={c._id} className="p-4 border dark:border-gray-700 rounded-lg">
                     <div className="flex justify-between items-start">
                       <div>
                         <h4 className="font-medium text-gray-900 dark:text-white">{c.title}</h4>
                         <p className="text-sm text-gray-600 dark:text-gray-400">{c.description}</p>
                         <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">{c.residentName} • {c.building}-{c.flatNumber} • {new Date(c.createdAt).toLocaleString()}</p>
+                        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                          {c.residentEmail && (
+                            <span className="text-[11px] text-gray-500 dark:text-gray-500">Email: {c.residentEmail}</span>
+                          )}
+                          {c.residentPhone && (
+                            <span className="text-[11px] text-gray-500 dark:text-gray-500">Phone: {c.residentPhone}</span>
+                          )}
+                        </div>
+                        {c.residentAuthUserId && (
+                          <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-0.5">ID: {c.residentAuthUserId}</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className={`px-2 py-1 rounded text-xs ${c.status==='resolved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{c.status}</span>
-                        {c.status !== 'resolved' && (
+                        {c.status !== 'resolved' ? (
                           <button
                             onClick={async ()=>{
                               try {
                                 await complaintService.updateComplaint(c._id, { status: 'resolved' })
-                                setComplaints(complaints.map(x => x._id===c._id ? { ...x, status: 'resolved' } : x))
+                                setComplaints(complaints.map(x => x._id===c._id ? { ...x, status: 'resolved', updatedAt: new Date().toISOString() } : x))
                               } catch (e) { console.error(e) }
                             }}
                             className="px-3 py-1 bg-blue-600 text-white rounded"
                           >Mark Resolved</button>
+                        ) : (
+                          <span className="text-xs text-gray-500">Resolved</span>
                         )}
                       </div>
                     </div>

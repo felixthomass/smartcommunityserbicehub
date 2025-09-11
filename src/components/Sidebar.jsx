@@ -38,6 +38,7 @@ const Sidebar = ({ user, currentPage, setCurrentPage, isCollapsed, setIsCollapse
       { id: 'complaints', label: 'My Complaints', icon: MessageSquare },
       { id: 'visitors', label: 'Visitor Management', icon: QrCode },
       { id: 'announcements', label: 'Announcements', icon: Bell },
+      { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'profile', label: 'Profile', icon: Settings }
     ],
     staff: [
