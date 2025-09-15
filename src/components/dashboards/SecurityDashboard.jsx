@@ -18,10 +18,14 @@ import {
   CheckCircle,
   XCircle,
   Calendar,
-  Download
+  Download,
+  QrCode,
+  Bell
 } from 'lucide-react'
 import { mongoService } from '../../services/mongoService'
 import { passService } from '../../services/passService'
+import { notificationService } from '../../services/notificationService'
+import { showSuccess, showError, showConfirm, showWarning, notify } from '../../utils/sweetAlert'
 
 const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   // State management
@@ -33,6 +37,10 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [statusFilter, setStatusFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('')
   const [stats, setStats] = useState({ totalVisitors: 0, checkedIn: 0, checkedOut: 0 })
+
+  // Notification State
+  const [notifications, setNotifications] = useState([])
+  const [notificationsLoading, setNotificationsLoading] = useState(false)
 
   // Form state
   const [visitorForm, setVisitorForm] = useState({
@@ -98,6 +106,8 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       setActiveView('scan')
     } else if (currentPage === 'visitors') {
       setActiveView('list')
+    } else if (currentPage === 'notifications') {
+      // Notifications page is handled separately
     }
   }, [currentPage])
 
@@ -105,6 +115,26 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   useEffect(() => {
     filterLogs()
   }, [visitorLogs, searchTerm, statusFilter, dateFilter])
+
+  // Load notifications when notifications page is active
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      if (currentPage !== 'notifications' || !user?.id) return
+      try {
+        setNotificationsLoading(true)
+        const result = await notificationService.getUserNotifications(user.id, { limit: 50, role: 'security' })
+        if (result.success) {
+          setNotifications(result.data?.notifications || [])
+        }
+      } catch (e) {
+        console.error('Error loading notifications:', e)
+        setNotifications([])
+      } finally {
+        setNotificationsLoading(false)
+      }
+    }
+    fetchNotifications()
+  }, [currentPage, user])
 
   // Load visitor logs
   const loadVisitorLogs = async () => {
@@ -220,7 +250,7 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
 
           if (!visitorId) {
             console.error('❌ No visitor ID found in result:', JSON.stringify(result, null, 2))
-            alert('Visitor created but document upload failed: No visitor ID found')
+            showWarning('Visitor Created', 'Visitor was created but document upload failed: No visitor ID found')
             // Still reset form and reload data
             resetForm()
             loadVisitorLogs()
@@ -252,13 +282,13 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
             : 'Visitor logged successfully! (Document upload may have failed)'
           : 'Visitor logged successfully!'
 
-        alert(message)
+        showSuccess('Visitor Logged Successfully!', message)
       } else {
-        alert('Failed to create visitor log: ' + result.error)
+        showError('Failed to Create Visitor Log', result.error)
       }
     } catch (error) {
       console.error('Error creating visitor log:', error)
-      alert('Error creating visitor log')
+      showError('Error Creating Visitor Log', 'Please try again later.')
     } finally {
       setIsLoading(false)
       setIsUploading(false)
@@ -312,24 +342,25 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         } catch (_) {}
         loadVisitorLogs()
         loadStats()
-        alert('Visitor checked out successfully!')
+        showSuccess('Visitor Checked Out!', 'The visitor has been successfully checked out.')
       } else {
-        alert('Failed to check out visitor: ' + result.error)
+        showError('Failed to Check Out Visitor', result.error)
       }
     } catch (error) {
       console.error('Error checking out visitor:', error)
-      alert('Error checking out visitor')
+      showError('Error Checking Out Visitor', 'Please try again later.')
     }
   }
 
   // Handle delete
   const handleDeleteVisitor = async (visitorId) => {
     if (!visitorId) {
-      alert('Invalid visitor ID')
+      showError('Invalid Visitor ID', 'Cannot delete visitor: invalid ID.')
       return
     }
 
-    if (confirm('Are you sure you want to delete this visitor log? This action cannot be undone.')) {
+    const result = await showConfirm('Delete Visitor Log', 'Are you sure you want to delete this visitor log? This action cannot be undone.')
+    if (result.isConfirmed) {
       setIsLoading(true)
       try {
         console.log('Deleting visitor:', visitorId)
@@ -339,14 +370,14 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           console.log('✅ Visitor deleted successfully')
           loadVisitorLogs()
           loadStats()
-          alert('Visitor log deleted successfully!')
+          showSuccess('Visitor Log Deleted!', 'The visitor log has been successfully deleted.')
         } else {
           console.error('❌ Delete failed:', result.error)
-          alert('Failed to delete visitor log: ' + result.error)
+          showError('Failed to Delete Visitor Log', result.error)
         }
       } catch (error) {
         console.error('❌ Error deleting visitor log:', error)
-        alert('Error deleting visitor log: ' + error.message)
+        showError('Error Deleting Visitor Log', error.message)
       } finally {
         setIsLoading(false)
       }
@@ -415,10 +446,10 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           setSelectedFile(file)
           setPreviewUrl(URL.createObjectURL(blob))
           console.log('✅ Photo captured successfully')
-          alert('Photo captured successfully!')
+          showSuccess('Photo Captured!', 'The photo has been captured successfully.')
         } else {
           console.error('❌ Failed to create blob from canvas')
-          alert('Failed to capture photo. Please try again.')
+          showError('Photo Capture Failed', 'Failed to capture photo. Please try again.')
         }
 
         // Stop camera stream and reset UI
@@ -443,7 +474,7 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         placeholder.classList.remove('hidden')
       }
 
-      alert(`Unable to access camera: ${error.message}. Please use file upload instead.`)
+      showError('Camera Access Failed', `Unable to access camera: ${error.message}. Please use file upload instead.`)
       setShowCamera(false)
     }
   }
@@ -903,14 +934,6 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                   <Camera className="w-5 h-5" />
                   Take Photo
                 </button>
-                <button
-                  type="button"
-                  onClick={() => document.getElementById('qr-image-upload').click()}
-                  className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
-                >
-                  <QrCode className="w-5 h-5" />
-                  Upload QR Image
-                </button>
               </div>
 
               <input
@@ -921,52 +944,7 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                 className="hidden"
               />
 
-              <input
-                id="qr-image-upload"
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={async (e) => {
-                  try {
-                    const file = e.target.files && e.target.files[0]
-                    if (!file) return
-                    // Use a lightweight client-side QR decoder via a CDN
-                    if (!window.qrcodeParserLoaded) {
-                      await new Promise((resolve, reject) => {
-                        const s = document.createElement('script')
-                        s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
-                        s.onload = () => { window.qrcodeParserLoaded = true; resolve() }
-                        s.onerror = reject
-                        document.body.appendChild(s)
-                      })
-                    }
-                    const arrayBuffer = await file.arrayBuffer()
-                    const blob = new Blob([arrayBuffer])
-                    const img = new Image()
-                    img.onload = () => {
-                      const canvas = document.createElement('canvas')
-                      canvas.width = img.width
-                      canvas.height = img.height
-                      const ctx = canvas.getContext('2d')
-                      ctx.drawImage(img, 0, 0)
-                      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-                      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
-                      if (code && code.data) {
-                        setScanCode(code.data.toUpperCase())
-                        alert('QR code detected from image!')
-                      } else {
-                        alert('Unable to read QR from this image. Try another one.')
-                      }
-                    }
-                    img.onerror = () => alert('Unable to load selected image.')
-                    img.src = URL.createObjectURL(blob)
-                  } catch (err) {
-                    alert('Failed to process QR image.')
-                  } finally {
-                    e.target.value = ''
-                  }
-                }}
-              />
+              
 
               {previewUrl && (
                 <div className="mt-4">
@@ -1227,6 +1205,33 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     )
   }
 
+  // Notification handlers
+  const handleNotificationClick = async (notification) => {
+    try {
+      if (!notification.isRead) {
+        await notificationService.markAsRead(notification._id)
+        setNotifications(prev => 
+          prev.map(n => n._id === notification._id ? { ...n, isRead: true } : n)
+        )
+      }
+      
+      if (notification.metadata?.actionUrl) {
+        setCurrentPage(notification.metadata.actionUrl.replace('/', ''))
+      }
+    } catch (error) {
+      console.error('Error handling notification click:', error)
+    }
+  }
+
+  const markAllNotificationsAsRead = async () => {
+    try {
+      await notificationService.markAllAsRead(user.id)
+      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <header className="bg-white dark:bg-gray-800 shadow">
@@ -1249,7 +1254,81 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Show different views based on activeView */}
-        {activeView === 'add' || activeView === 'edit' ? renderVisitorForm() :
+        {currentPage === 'notifications' ? (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Notifications</h3>
+                <button
+                  onClick={markAllNotificationsAsRead}
+                  className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                >
+                  Mark All as Read
+                </button>
+              </div>
+              
+              {notificationsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="ml-2 text-gray-600 dark:text-gray-400">Loading notifications...</span>
+                </div>
+              ) : notifications.length === 0 ? (
+                <div className="text-center py-8">
+                  <Bell className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-500 dark:text-gray-400">No notifications yet</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notifications.map((notification) => (
+                    <div
+                      key={notification._id}
+                      onClick={() => handleNotificationClick(notification)}
+                      className={`p-4 rounded-lg border cursor-pointer transition-colors ${
+                        notification.isRead 
+                          ? 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600' 
+                          : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className={`font-medium ${
+                              notification.isRead 
+                                ? 'text-gray-700 dark:text-gray-300' 
+                                : 'text-gray-900 dark:text-white'
+                            }`}>
+                              {notification.title}
+                            </h4>
+                            {!notification.isRead && (
+                              <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
+                            )}
+                          </div>
+                          <p className={`text-sm ${
+                            notification.isRead 
+                              ? 'text-gray-600 dark:text-gray-400' 
+                              : 'text-gray-700 dark:text-gray-300'
+                          }`}>
+                            {notification.message}
+                          </p>
+                          <div className="flex items-center gap-4 mt-2 text-xs text-gray-500 dark:text-gray-400">
+                            <span>{new Date(notification.createdAt).toLocaleString()}</span>
+                            <span className={`px-2 py-1 rounded-full text-xs ${
+                              notification.priority === 'high' ? 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400' :
+                              notification.priority === 'medium' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400' :
+                              'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                            }`}>
+                              {notification.priority}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : activeView === 'add' || activeView === 'edit' ? renderVisitorForm() :
          activeView === 'details' ? renderVisitorDetails() :
          activeView === 'scan' ? (
           <div className="space-y-6">
@@ -1271,7 +1350,7 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                         const { pass } = await passService.getPassByCode(scanCode.trim())
                         setScannedPass(pass)
                       } catch (e) {
-                        alert('Pass not found')
+                        showError('Pass Not Found', 'The entered pass code was not found.')
                         setScannedPass(null)
                       }
                     }}
@@ -1300,12 +1379,64 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                           }, () => {})
                         }, 0)
                       } catch (e) {
-                        alert('Unable to start QR scanner. Please enter the code manually.')
+                        showError('QR Scanner Failed', 'Unable to start QR scanner. Please enter the code manually.')
                       }
                     }}
                     className="px-4 py-2 bg-purple-600 text-white rounded-lg"
                   >Scan QR</button>
+                  <button
+                    onClick={() => document.getElementById('scan-qr-image-upload').click()}
+                    className="px-4 py-2 bg-gray-700 text-white rounded-lg flex items-center gap-2"
+                  >
+                    <QrCode className="w-4 h-4" /> Upload QR Image
+                  </button>
                 </div>
+
+                <input
+                  id="scan-qr-image-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (e) => {
+                    try {
+                      const file = e.target.files && e.target.files[0]
+                      if (!file) return
+                      if (!window.qrcodeParserLoaded) {
+                        await new Promise((resolve, reject) => {
+                          const s = document.createElement('script')
+                          s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
+                          s.onload = () => { window.qrcodeParserLoaded = true; resolve() }
+                          s.onerror = reject
+                          document.body.appendChild(s)
+                        })
+                      }
+                      const arrayBuffer = await file.arrayBuffer()
+                      const blob = new Blob([arrayBuffer])
+                      const img = new Image()
+                      img.onload = () => {
+                        const canvas = document.createElement('canvas')
+                        canvas.width = img.width
+                        canvas.height = img.height
+                        const ctx = canvas.getContext('2d')
+                        ctx.drawImage(img, 0, 0)
+                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+                        const code = window.jsQR(imageData.data, imageData.width, imageData.height)
+                        if (code && code.data) {
+                          setScanCode(code.data.toUpperCase())
+                          notify('QR code detected from image!', 'success')
+                        } else {
+                          showError('QR Read Failed', 'Unable to read QR from this image. Try another one.')
+                        }
+                      }
+                      img.onerror = () => showError('Image Load Failed', 'Unable to load selected image.')
+                      img.src = URL.createObjectURL(blob)
+                    } catch (err) {
+                      showError('Processing Failed', 'Failed to process QR image.')
+                    } finally {
+                      e.target.value = ''
+                    }
+                  }}
+                />
               </div>
 
               {showQrScanner && (
@@ -1346,15 +1477,15 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                             } catch (e) {
                               console.warn('Failed to mark pass used:', e)
                             }
-                            alert('Visitor logged successfully')
+                            showSuccess('Visitor Logged Successfully!', 'The visitor has been checked in using the pass.')
                             setScannedPass(null)
                             setScanCode('')
                             loadVisitorLogs()
                           } else {
-                            alert('Failed to create visitor log')
+                            showError('Failed to Create Visitor Log', 'Please try again.')
                           }
                         } catch (e) {
-                          alert('Failed to create visitor log')
+                          showError('Failed to Create Visitor Log', 'An error occurred while logging the visitor.')
                         }
                       }}
                       className="px-4 py-2 bg-green-600 text-white rounded-lg"

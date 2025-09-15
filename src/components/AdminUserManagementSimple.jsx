@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { residentService } from '../services/residentService'
 import { Users, Search, Filter, Edit, Trash2, Shield, User, Building2, Phone, Mail, Send, MessageSquare, Key, Ban, CheckCircle } from 'lucide-react'
+import { showWarning, notify } from '../utils/sweetAlert'
 
 const AdminUserManagementSimple = () => {
   const { user } = useAuth()
@@ -50,12 +51,12 @@ const AdminUserManagementSimple = () => {
   }
 
   const handleDeleteUser = async (userId) => {
-    alert('Deleting residents is not implemented yet in this view.')
+    showWarning('Feature Not Available', 'Deleting residents is not implemented yet in this view.')
   }
 
   const handleSendCredentials = (staffUser) => {
     // Simple alert for now - will implement full functionality later
-    alert(`Sending credentials for ${staffUser.name} (${staffUser.email}) to admin via email and WhatsApp`)
+    notify(`Sending credentials for ${staffUser.name} (${staffUser.email}) to admin via email and WhatsApp`, 'info')
     setMessage({ type: 'success', text: 'Credentials sent successfully!' })
   }
 

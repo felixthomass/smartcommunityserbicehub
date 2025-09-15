@@ -9,6 +9,9 @@ import { residentService } from '../../services/residentService'
 import { chatService } from '../../services/chatService'
 import { complaintService } from '../../services/complaintService'
 import { passService } from '../../services/passService'
+import { billService } from '../../services/billService'
+import { notificationService } from '../../services/notificationService'
+import { showSuccess, showError, showConfirm, notify } from '../../utils/sweetAlert'
 
 const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [activeTab, setActiveTab] = useState('dashboard')
@@ -72,6 +75,28 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     try { return JSON.parse(localStorage.getItem('chat_last_seen')||'{}') } catch { return {} }
   })
 
+  // Bill Management State
+  const [bills, setBills] = useState([])
+  const [billsLoading, setBillsLoading] = useState(false)
+  const [billSummary, setBillSummary] = useState({
+    totalPending: 0,
+    totalOverdue: 0,
+    totalPaid: 0,
+    recentBills: [],
+    recentPayments: []
+  })
+  const [selectedBill, setSelectedBill] = useState(null)
+  const [paymentLoading, setPaymentLoading] = useState(false)
+  const [paymentHistory, setPaymentHistory] = useState([])
+  const [billFilters, setBillFilters] = useState({
+    status: 'all',
+    category: 'all'
+  })
+
+  // Notification State
+  const [notifications, setNotifications] = useState([])
+  const [notificationsLoading, setNotificationsLoading] = useState(false)
+
   const isProfileComplete = useMemo(() => {
     const required = ['email', 'phone', 'ownerName', 'flatNumber']
     return required.every((k) => (form[k] || '').trim().length > 0)
@@ -127,15 +152,49 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     const map = {
       dashboard: 'dashboard',
       payments: 'payments',
+      maintenance: 'payments', // Map maintenance to payments (bill management)
       complaints: 'complaints',
       visitors: 'visitors',
       announcements: 'announcements',
+      notifications: 'notifications',
       profile: 'profile',
       chat: 'chat'
     }
     const next = map[currentPage] || 'dashboard'
     setActiveTab(next)
   }, [currentPage])
+
+  // Load bills when payments tab is active
+  useEffect(() => {
+    const fetchBills = async () => {
+      if (activeTab !== 'payments' || !user?.id) return
+      try {
+        setBillsLoading(true)
+        const [billsResult, summaryResult, historyResult] = await Promise.all([
+          billService.getResidentBills(user.id),
+          billService.getResidentBillSummary(user.id),
+          billService.getPaymentHistory(user.id)
+        ])
+        
+        if (billsResult.success) {
+          setBills(billsResult.data?.bills || [])
+        }
+        if (summaryResult.success) {
+          setBillSummary(summaryResult.data)
+        }
+        if (historyResult.success) {
+          setPaymentHistory(historyResult.data?.payments || [])
+        }
+      } catch (e) {
+        console.error('Error loading bill data:', e)
+        setBills([])
+        setPaymentHistory([])
+      } finally {
+        setBillsLoading(false)
+      }
+    }
+    fetchBills()
+  }, [activeTab, user])
 
   // Load my complaints when switching to complaints tab
   useEffect(() => {
@@ -234,7 +293,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       setSelectedRoomId(room._id)
       const { rooms } = await chatService.listRooms(user.id)
       setChatRooms(rooms || [])
-    } catch (e) { console.error(e); alert('Failed to start chat') }
+    } catch (e) { console.error(e); showError('Failed to start chat', 'Please try again later.') }
   }
 
   const sendTextMessage = async () => {
@@ -256,7 +315,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       // refresh rooms order
       const { rooms } = await chatService.listRooms(user.id)
       setChatRooms(rooms || [])
-    } catch (e) { console.error(e); alert('Failed to send message') }
+    } catch (e) { console.error(e); showError('Failed to send message', 'Please check your connection and try again.') }
   }
 
   const markRoomSeen = (roomId) => {
@@ -285,6 +344,26 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     fetchMyPasses()
   }, [activeTab, user])
 
+  // Load notifications when notifications tab is active
+  useEffect(() => {
+    const fetchNotifications = async () => {
+      if (activeTab !== 'notifications' || !user?.id) return
+      try {
+        setNotificationsLoading(true)
+        const result = await notificationService.getUserNotifications(user.id, { limit: 50, role: 'resident' })
+        if (result.success) {
+          setNotifications(result.data?.notifications || [])
+        }
+      } catch (e) {
+        console.error('Error loading notifications:', e)
+        setNotifications([])
+      } finally {
+        setNotificationsLoading(false)
+      }
+    }
+    fetchNotifications()
+  }, [activeTab, user])
+
   const createPass = async () => {
     if (!user?.id) return
     try {
@@ -309,6 +388,107 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       console.error(e)
     } finally {
       setCreatingPass(false)
+    }
+  }
+
+  // Bill Payment Functions
+  const handlePayBill = async (bill, paymentMethod = 'card') => {
+    if (!user?.id) return
+    
+    try {
+      setPaymentLoading(true)
+      
+      // Find user's assignment in the bill
+      const assignment = bill.assignments?.find(a => a.residentId === user.id)
+      if (!assignment) {
+        showError('Bill Assignment Not Found', 'This bill is not assigned to you.')
+        return
+      }
+
+      const paymentData = {
+        billId: bill._id,
+        residentId: user.id,
+        amount: assignment.amount,
+        paymentMethod,
+        paymentDetails: {
+          billTitle: bill.title,
+          category: bill.category,
+          dueDate: bill.dueDate
+        }
+      }
+
+      const result = await billService.processPayment(paymentData)
+      
+      if (result.success) {
+        showSuccess('Payment Successful!', 'Your payment has been processed successfully.')
+        setSelectedBill(null)
+        
+        // Reload bill data
+        const [billsResult, summaryResult, historyResult] = await Promise.all([
+          billService.getResidentBills(user.id),
+          billService.getResidentBillSummary(user.id),
+          billService.getPaymentHistory(user.id)
+        ])
+        
+        if (billsResult.success) setBills(billsResult.data?.bills || [])
+        if (summaryResult.success) setBillSummary(summaryResult.data)
+        if (historyResult.success) setPaymentHistory(historyResult.data?.payments || [])
+      } else {
+        showError('Payment Failed', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error processing payment:', error)
+      showError('Payment Failed', error.message || 'Please check your connection and try again.')
+    } finally {
+      setPaymentLoading(false)
+    }
+  }
+
+  // Filter bills
+  const filteredBills = bills.filter(bill => {
+    const matchesStatus = billFilters.status === 'all' || 
+      (billFilters.status === 'pending' && bill.assignments?.find(a => a.residentId === user.id)?.status === 'pending') ||
+      (billFilters.status === 'paid' && bill.assignments?.find(a => a.residentId === user.id)?.status === 'paid')
+    
+    const matchesCategory = billFilters.category === 'all' || bill.category === billFilters.category
+    
+    return matchesStatus && matchesCategory
+  })
+
+  // Notification handling functions
+  const handleNotificationClick = async (notification) => {
+    if (!notification.isRead) {
+      try {
+        await notificationService.markAsRead(notification._id)
+        setNotifications(prev => 
+          prev.map(n => n._id === notification._id ? { ...n, isRead: true } : n)
+        )
+      } catch (error) {
+        console.error('Error marking notification as read:', error)
+      }
+    }
+    
+    // Navigate to relevant page if actionUrl is provided
+    if (notification.metadata?.actionUrl) {
+      const page = notification.metadata.actionUrl.replace('/', '')
+      if (page === 'payments') {
+        setActiveTab('payments')
+      } else if (page === 'complaints') {
+        setActiveTab('complaints')
+      }
+    }
+  }
+
+  const markAllNotificationsAsRead = async () => {
+    if (!user?.id) return
+    
+    try {
+      await notificationService.markAllAsRead(user.id)
+      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
+      showSuccess('All Notifications Marked as Read', 'All notifications have been marked as read.')
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error)
+      showError('Error', 'Failed to mark all notifications as read.')
     }
   }
 
@@ -460,34 +640,189 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       case 'payments':
         return (
           <div className="space-y-6">
+            {/* Bill Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <CreditCard className="w-8 h-8 text-red-600" />
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalPending?.toLocaleString() || 0}</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Pending Bills</p>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-orange-50 dark:bg-orange-900/20 p-6 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <CreditCard className="w-8 h-8 text-orange-600" />
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalOverdue?.toLocaleString() || 0}</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Overdue</p>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <CreditCard className="w-8 h-8 text-green-600" />
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalPaid?.toLocaleString() || 0}</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Paid This Year</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Current Bills */}
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">My Bills</h3>
+                <div className="flex gap-3">
+                  <select
+                    value={billFilters.status}
+                    onChange={(e) => setBillFilters({...billFilters, status: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="pending">Pending</option>
+                    <option value="paid">Paid</option>
+                  </select>
+                  <select
+                    value={billFilters.category}
+                    onChange={(e) => setBillFilters({...billFilters, category: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                  >
+                    <option value="all">All Categories</option>
+                    <option value="electricity">Electricity</option>
+                    <option value="water">Water</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="gas">Gas</option>
+                    <option value="internet">Internet</option>
+                    <option value="security">Security</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+              </div>
+
+              {billsLoading ? (
+                <div className="text-center py-8">
+                  <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-gray-600 dark:text-gray-400">Loading bills...</p>
+                </div>
+              ) : filteredBills.length === 0 ? (
+                <div className="text-center py-8">
+                  <CreditCard className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600 dark:text-gray-400">No bills found</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredBills.map((bill) => {
+                    const assignment = bill.assignments?.find(a => a.residentId === user.id)
+                    if (!assignment) return null
+                    
+                    const isOverdue = new Date(bill.dueDate) < new Date() && assignment.status === 'pending'
+                    
+                    return (
+                      <div key={bill._id} className={`p-4 border rounded-lg ${
+                        isOverdue ? 'border-red-300 bg-red-50 dark:bg-red-900/10' : 'border-gray-300 dark:border-gray-600'
+                      }`}>
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <h4 className="font-medium text-gray-900 dark:text-white">{bill.title}</h4>
+                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded capitalize">
+                                {bill.category}
+                              </span>
+                              {isOverdue && (
+                                <span className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded">
+                                  Overdue
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">{bill.description}</p>
+                            <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
+                              <span>Due: {new Date(bill.dueDate).toLocaleDateString()}</span>
+                              <span>Amount: ₹{assignment.amount?.toLocaleString()}</span>
+                              <span className={`px-2 py-1 rounded text-xs ${
+                                assignment.status === 'paid' 
+                                  ? 'bg-green-100 text-green-800' 
+                                  : 'bg-orange-100 text-orange-800'
+                              }`}>
+                                {assignment.status}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setSelectedBill(bill)}
+                              className="px-3 py-2 text-blue-600 hover:text-blue-800 dark:text-blue-400 text-sm"
+                            >
+                              View Details
+                            </button>
+                            {assignment.status === 'pending' && (
+                              <button
+                                onClick={() => handlePayBill(bill)}
+                                disabled={paymentLoading}
+                                className={`px-4 py-2 rounded-lg text-white text-sm ${
+                                  paymentLoading 
+                                    ? 'bg-gray-400 cursor-not-allowed' 
+                                    : 'bg-green-600 hover:bg-green-700'
+                                }`}
+                              >
+                                {paymentLoading ? 'Processing...' : 'Pay Now'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Payment History */}
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Payment History</h3>
+              {paymentHistory.length === 0 ? (
+                <p className="text-sm text-gray-600 dark:text-gray-400">No payment history found.</p>
+              ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b dark:border-gray-700">
                       <th className="text-left py-2 text-gray-900 dark:text-white">Date</th>
-                      <th className="text-left py-2 text-gray-900 dark:text-white">Description</th>
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Bill</th>
                       <th className="text-left py-2 text-gray-900 dark:text-white">Amount</th>
-                      <th className="text-left py-2 text-gray-900 dark:text-white">Status</th>
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Method</th>
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Transaction ID</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-b dark:border-gray-700">
-                      <td className="py-2 text-gray-600 dark:text-gray-400">Dec 1, 2024</td>
-                      <td className="py-2 text-gray-600 dark:text-gray-400">Maintenance</td>
-                      <td className="py-2 text-gray-600 dark:text-gray-400">₹2,000</td>
-                      <td className="py-2"><span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">Paid</span></td>
+                      {paymentHistory.map((payment) => (
+                        <tr key={payment._id} className="border-b dark:border-gray-700">
+                          <td className="py-2 text-gray-600 dark:text-gray-400">
+                            {new Date(payment.paidAt).toLocaleDateString()}
+                          </td>
+                          <td className="py-2 text-gray-600 dark:text-gray-400">
+                            <div>
+                              <p className="font-medium">{payment.billTitle}</p>
+                              <p className="text-xs text-gray-500 capitalize">{payment.category}</p>
+                            </div>
+                          </td>
+                          <td className="py-2 text-gray-600 dark:text-gray-400">
+                            ₹{payment.amount?.toLocaleString()}
+                          </td>
+                          <td className="py-2 text-gray-600 dark:text-gray-400 capitalize">
+                            {payment.paymentMethod}
+                          </td>
+                          <td className="py-2 text-gray-600 dark:text-gray-400 font-mono text-xs">
+                            {payment.transactionId}
+                          </td>
                     </tr>
-                    <tr className="border-b dark:border-gray-700">
-                      <td className="py-2 text-gray-600 dark:text-gray-400">Nov 15, 2024</td>
-                      <td className="py-2 text-gray-600 dark:text-gray-400">Electricity</td>
-                      <td className="py-2 text-gray-600 dark:text-gray-400">₹450</td>
-                      <td className="py-2"><span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">Paid</span></td>
-                    </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
           </div>
         )
@@ -635,12 +970,14 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                       <button
                         onClick={async () => {
                           try {
-                            if (!confirm('Cancel this pass? This cannot be undone.')) return
+                            const result = await showConfirm('Cancel Pass', 'Are you sure you want to cancel this pass? This cannot be undone.')
+                            if (!result.isConfirmed) return
                             await passService.updatePassStatus(p.code, 'expired')
                             const { passes } = await passService.listPasses(user.id)
                             setMyPasses((passes || []).filter(x => x.status === 'active'))
+                            showSuccess('Pass Cancelled', 'The visitor pass has been cancelled successfully.')
                           } catch (e) {
-                            alert('Failed to cancel pass')
+                            showError('Failed to Cancel Pass', 'Please try again later.')
                           }
                         }}
                         className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-xs"
@@ -711,7 +1048,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                           setSelectedRoomId(room._id)
                           const { rooms } = await chatService.listRooms(user.id)
                           setChatRooms(rooms || [])
-                        } catch (e) { console.error(e); alert('Failed to open chat') }
+                        } catch (e) { console.error(e); showError('Failed to Open Chat', 'Please try again later.') }
                       }} className={`w-full text-left p-3 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 ${selectedRoomId && (chatRooms.find(rr=>rr._id===selectedRoomId)?.memberAuthUserIds||[]).includes(r.authUserId) ? 'bg-gray-50 dark:bg-gray-700' : ''}`}>
                         <div className="text-sm text-gray-900 dark:text-white truncate">{r.name || r.email || r.authUserId}</div>
                         <div className="text-xs text-gray-500 truncate">{r.authUserId}</div>
@@ -782,6 +1119,81 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        )
+      case 'notifications':
+        return (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">My Notifications</h3>
+                {notifications.some(n => !n.isRead) && (
+                  <button
+                    onClick={markAllNotificationsAsRead}
+                    className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                  >
+                    Mark all as read
+                  </button>
+                )}
+              </div>
+
+              {notificationsLoading ? (
+                <div className="text-center py-8">
+                  <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-gray-600 dark:text-gray-400">Loading notifications...</p>
+                </div>
+              ) : notifications.length === 0 ? (
+                <div className="text-center py-8">
+                  <Bell className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600 dark:text-gray-400">No notifications found</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {notifications.map((notification) => (
+                    <div
+                      key={notification._id}
+                      onClick={() => handleNotificationClick(notification)}
+                      className={`p-4 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                        !notification.isRead ? 'border-blue-300 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-300 dark:border-gray-600'
+                      }`}
+                    >
+                      <div className="flex items-start space-x-3">
+                        <div className={`w-3 h-3 rounded-full mt-2 flex-shrink-0 ${
+                          notification.priority === 'urgent' ? 'bg-red-500' :
+                          notification.priority === 'high' ? 'bg-orange-500' :
+                          notification.priority === 'medium' ? 'bg-blue-500' : 'bg-gray-400'
+                        }`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="font-medium text-gray-900 dark:text-white truncate">
+                              {notification.title}
+                            </h4>
+                            <span className={`px-2 py-1 text-xs rounded ${
+                              notification.type === 'bill' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                              notification.type === 'complaint' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
+                              notification.type === 'info' ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
+                              'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200'
+                            }`}>
+                              {notification.type}
+                            </span>
+                            {!notification.isRead && (
+                              <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                            {notification.message}
+                          </p>
+                          <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-500">
+                            <span>From: {notification.senderName}</span>
+                            <span>{new Date(notification.createdAt).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )
@@ -939,6 +1351,155 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
               >
                 {saving ? 'Saving...' : 'Save and Continue'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bill Details Modal */}
+      {selectedBill && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Bill Details</h3>
+              <button
+                onClick={() => setSelectedBill(null)}
+                className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+              >
+                ✕ Close
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              {/* Bill Information */}
+              <div>
+                <h4 className="text-base font-medium text-gray-900 dark:text-white mb-2">Bill Information</h4>
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600 dark:text-gray-400">Title:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{selectedBill.title}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600 dark:text-gray-400">Category:</span>
+                    <span className="font-medium text-gray-900 dark:text-white capitalize">{selectedBill.category}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600 dark:text-gray-400">Total Amount:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">₹{selectedBill.totalAmount?.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600 dark:text-gray-400">Due Date:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{new Date(selectedBill.dueDate).toLocaleDateString()}</span>
+                  </div>
+                  {selectedBill.description && (
+                    <div>
+                      <span className="text-gray-600 dark:text-gray-400">Description:</span>
+                      <p className="mt-1 text-sm text-gray-900 dark:text-white">{selectedBill.description}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* My Share */}
+              <div>
+                <h4 className="text-base font-medium text-gray-900 dark:text-white mb-2">My Share</h4>
+                {(() => {
+                  const assignment = selectedBill.assignments?.find(a => a.residentId === user.id)
+                  if (!assignment) {
+                    return <p className="text-gray-600 dark:text-gray-400">Assignment not found</p>
+                  }
+                  
+                  return (
+                    <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white">Your Amount</p>
+                          <p className="text-xs text-gray-600 dark:text-gray-400">
+                            Split: {selectedBill.splitType === 'equal' ? 'Equal' : 
+                                   selectedBill.splitType === 'custom' ? 'Custom' : 'Size Based'}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xl font-bold text-gray-900 dark:text-white">₹{assignment.amount?.toLocaleString()}</p>
+                          <span className={`text-xs px-2 py-0.5 rounded ${
+                            assignment.status === 'paid' 
+                              ? 'bg-green-100 text-green-800' 
+                              : 'bg-orange-100 text-orange-800'
+                          }`}>
+                            {assignment.status}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+
+              {/* All Residents Split */}
+              <div>
+                <h4 className="text-base font-medium text-gray-900 dark:text-white mb-2">Bill Split</h4>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {selectedBill.assignments?.map((assignment) => (
+                    <div key={assignment.residentId} className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded-lg text-sm">
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-white">{assignment.residentName}</p>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">{assignment.building}-{assignment.flatNumber}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-medium text-gray-900 dark:text-white">₹{assignment.amount}</p>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          assignment.status === 'paid' 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-orange-100 text-orange-800'
+                        }`}>
+                          {assignment.status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Payment Actions */}
+              <div className="flex gap-4 pt-6 border-t border-gray-200 dark:border-gray-700">
+                {(() => {
+                  const assignment = selectedBill.assignments?.find(a => a.residentId === user.id)
+                  if (assignment?.status === 'pending') {
+                    return (
+                      <>
+                        <button
+                          onClick={() => handlePayBill(selectedBill, 'card')}
+                          disabled={paymentLoading}
+                          className={`flex-1 py-3 rounded-lg text-white ${
+                            paymentLoading 
+                              ? 'bg-gray-400 cursor-not-allowed' 
+                              : 'bg-blue-600 hover:bg-blue-700'
+                          }`}
+                        >
+                          {paymentLoading ? 'Processing...' : '💳 Pay with Card'}
+                        </button>
+                        <button
+                          onClick={() => handlePayBill(selectedBill, 'upi')}
+                          disabled={paymentLoading}
+                          className={`flex-1 py-3 rounded-lg text-white ${
+                            paymentLoading 
+                              ? 'bg-gray-400 cursor-not-allowed' 
+                              : 'bg-green-600 hover:bg-green-700'
+                          }`}
+                        >
+                          {paymentLoading ? 'Processing...' : '📱 Pay with UPI'}
+                        </button>
+                      </>
+                    )
+                  } else {
+                    return (
+                      <div className="flex-1 text-center py-3">
+                        <span className="text-green-600 font-medium">✅ Payment Completed</span>
+                      </div>
+                    )
+                  }
+                })()}
+              </div>
             </div>
           </div>
         </div>

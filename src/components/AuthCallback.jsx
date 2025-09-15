@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
+import { showSuccess, showError } from '../utils/sweetAlert'
 
 const AuthCallback = () => {
   const [loading, setLoading] = useState(true)
@@ -187,9 +188,9 @@ const AuthCallback = () => {
                       redirectTo: `${window.location.origin}/auth/callback`
                     })
                     if (error) throw error
-                    alert('A new reset email has been sent.')
+                    showSuccess('Email Sent', 'A new reset email has been sent.')
                   } catch (e) {
-                    alert(e.message || 'Failed to resend reset email.')
+                    showError('Failed to Resend Email', e.message || 'Failed to resend reset email.')
                   }
                 }}
                 className="mt-3 text-sm text-blue-600 hover:text-blue-500"

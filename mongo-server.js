@@ -176,6 +176,279 @@ app.get('/api/visitors/:id', async (req, res) => {
   }
 })
 
+// ===== BILL MANAGEMENT ROUTES =====
+
+// Bill Schema
+const billSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  description: { type: String, default: '' },
+  category: { 
+    type: String, 
+    required: true, 
+    enum: ['electricity', 'water', 'maintenance', 'gas', 'internet', 'security', 'other']
+  },
+  totalAmount: { type: Number, required: true },
+  dueDate: { type: Date, required: true },
+  splitType: { 
+    type: String, 
+    required: true, 
+    enum: ['equal', 'custom', 'size_based'],
+    default: 'equal'
+  },
+  assignments: [{
+    residentId: { type: String, required: true },
+    residentName: { type: String, default: '' },
+    residentEmail: { type: String, default: '' },
+    building: { type: String, default: '' },
+    flatNumber: { type: String, default: '' },
+    amount: { type: Number, required: true },
+    status: { 
+      type: String, 
+      enum: ['pending', 'paid', 'partially_paid'],
+      default: 'pending'
+    },
+    paidAmount: { type: Number, default: 0 },
+    paidAt: { type: Date }
+  }],
+  createdBy: { type: String, required: true },
+  attachments: [{ name: String, url: String, type: String }],
+  status: { type: String, enum: ['draft', 'active', 'completed', 'cancelled'], default: 'active' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+})
+
+billSchema.pre('save', function(next) {
+  this.updatedAt = Date.now()
+  next()
+})
+
+const Bill = mongoose.model('Bill', billSchema)
+
+// Payment Schema
+const paymentSchema = new mongoose.Schema({
+  billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill', required: true },
+  residentId: { type: String, required: true },
+  residentName: { type: String, default: '' },
+  residentEmail: { type: String, default: '' },
+  amount: { type: Number, required: true },
+  paymentMethod: { type: String, enum: ['card', 'upi', 'bank_transfer', 'cash', 'cheque'], required: true },
+  transactionId: { type: String, required: true },
+  status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'completed' },
+  billTitle: { type: String, default: '' },
+  category: { type: String, default: '' },
+  dueDate: { type: Date },
+  paidAt: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now }
+})
+
+const Payment = mongoose.model('Payment', paymentSchema)
+
+// Notification Schema
+const notificationSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  type: { type: String, enum: ['info', 'warning', 'success', 'error', 'bill', 'complaint', 'visitor'], default: 'info' },
+  priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
+  targetUsers: [{ type: String }], // Array of user IDs
+  targetRoles: [{ type: String, enum: ['admin', 'resident', 'staff', 'security'] }], // Array of roles
+  senderId: { type: String, required: true },
+  senderName: { type: String, required: true },
+  isRead: { type: Boolean, default: false },
+  readAt: { type: Date },
+  expiresAt: { type: Date },
+  metadata: {
+    billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill' },
+    complaintId: { type: mongoose.Schema.Types.ObjectId, ref: 'Complaint' },
+    visitorId: { type: mongoose.Schema.Types.ObjectId, ref: 'VisitorLog' },
+    actionUrl: { type: String }
+  }
+}, { timestamps: true })
+
+const Notification = mongoose.model('Notification', notificationSchema)
+
+// Create a new bill
+app.post('/api/bills', async (req, res) => {
+  try {
+    const billData = req.body
+    const bill = new Bill(billData)
+    const savedBill = await bill.save()
+    
+    // Send automated notification to all residents about new bill
+    try {
+      const notification = new Notification({
+        title: 'New Bill Created',
+        message: `A new ${billData.category} bill has been created. Amount: ₹${billData.totalAmount}. Due: ${new Date(billData.dueDate).toLocaleDateString()}`,
+        type: 'bill',
+        priority: 'medium',
+        targetRoles: ['resident'],
+        senderId: billData.createdBy || 'system',
+        senderName: 'System',
+        metadata: {
+          billId: savedBill._id,
+          actionUrl: '/payments'
+        }
+      })
+      await notification.save()
+      console.log('✅ Bill notification sent to residents')
+
+      // Email broadcast to all residents with an email
+      try {
+        const residents = await Resident.find({ email: { $ne: '' } }, { email: 1 })
+        const emails = residents.map(r => r.email).filter(Boolean)
+        if (emails.length > 0) {
+          const subject = `New Bill: ${billData.title}`
+          const text = `A new ${billData.category} bill has been created.\n\nAmount: ₹${billData.totalAmount}\nDue: ${new Date(billData.dueDate).toLocaleDateString()}\n\nVisit: /payments`
+          await Promise.allSettled(emails.map(e => sendEmailViaServer(e, subject, null, text)))
+          console.log(`📧 Bill email fan-out: ${emails.length} attempted`)
+        }
+      } catch (mailErr) {
+        console.warn('⚠️ Bill email fan-out failed:', mailErr.message)
+      }
+    } catch (notifError) {
+      console.error('❌ Error sending bill notification:', notifError)
+    }
+    
+    res.status(201).json({ success: true, data: savedBill })
+  } catch (error) {
+    console.error('❌ Error creating bill:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// Get all bills
+app.get('/api/bills', async (req, res) => {
+  try {
+    const { limit = 50, page = 1, category, status } = req.query
+    let query = {}
+    if (category && category !== 'all') query.category = category
+    if (status && status !== 'all') query.status = status
+    const skip = (parseInt(page) - 1) * parseInt(limit)
+    const bills = await Bill.find(query).sort({ createdAt: -1 }).limit(parseInt(limit)).skip(skip)
+    const total = await Bill.countDocuments(query)
+    res.json({ success: true, data: { bills, pagination: { total, page: parseInt(page), limit: parseInt(limit), pages: Math.ceil(total / parseInt(limit)) } } })
+  } catch (error) {
+    console.error('❌ Error fetching bills:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get bill by ID
+app.get('/api/bills/id/:id', async (req, res) => {
+  try {
+    const bill = await Bill.findById(req.params.id)
+    if (!bill) return res.status(404).json({ success: false, error: 'Bill not found' })
+    res.json({ success: true, data: bill })
+  } catch (error) {
+    console.error('❌ Error fetching bill:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Update bill
+app.put('/api/bills/id/:id', async (req, res) => {
+  try {
+    const updateData = { ...req.body, updatedAt: Date.now() }
+    const bill = await Bill.findByIdAndUpdate(req.params.id, updateData, { new: true })
+    if (!bill) return res.status(404).json({ success: false, error: 'Bill not found' })
+    res.json({ success: true, data: bill })
+  } catch (error) {
+    console.error('❌ Error updating bill:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// Delete bill
+app.delete('/api/bills/id/:id', async (req, res) => {
+  try {
+    const bill = await Bill.findByIdAndDelete(req.params.id)
+    if (!bill) return res.status(404).json({ success: false, error: 'Bill not found' })
+    res.json({ success: true, message: 'Bill deleted successfully' })
+  } catch (error) {
+    console.error('❌ Error deleting bill:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get bills for a specific resident
+app.get('/api/bills/resident/:residentId', async (req, res) => {
+  try {
+    const { residentId } = req.params
+    const { status } = req.query
+    const query = { 'assignments.residentId': residentId }
+    if (status && status !== 'all') query['assignments.status'] = status
+    const bills = await Bill.find(query).sort({ createdAt: -1 })
+    res.json({ success: true, data: { bills } })
+  } catch (error) {
+    console.error('❌ Error fetching resident bills:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get bill statistics
+app.get('/api/bills/stats', async (req, res) => {
+  try {
+    const stats = await Bill.aggregate([{ $group: { _id: null, totalBills: { $sum: 1 }, totalAmount: { $sum: '$totalAmount' }, avgAmount: { $avg: '$totalAmount' } } }])
+    const paidStats = await Bill.aggregate([{ $unwind: '$assignments' }, { $group: { _id: null, paidAmount: { $sum: { $cond: [{ $eq: ['$assignments.status', 'paid'] }, '$assignments.amount', 0] } }, pendingAmount: { $sum: { $cond: [{ $eq: ['$assignments.status', 'pending'] }, '$assignments.amount', 0] } } } }])
+    const overdueCount = await Bill.countDocuments({ dueDate: { $lt: new Date() }, 'assignments.status': 'pending' })
+    res.json({ success: true, data: { totalBills: stats[0]?.totalBills || 0, totalAmount: stats[0]?.totalAmount || 0, paidAmount: paidStats[0]?.paidAmount || 0, pendingAmount: paidStats[0]?.pendingAmount || 0, overdueCount: overdueCount || 0 } })
+  } catch (error) {
+    console.error('❌ Error fetching bill stats:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get resident bill summary
+app.get('/api/bills/resident/:residentId/summary', async (req, res) => {
+  try {
+    const { residentId } = req.params
+    const bills = await Bill.find({ 'assignments.residentId': residentId })
+    let totalPending = 0, totalOverdue = 0, totalPaid = 0
+    const now = new Date()
+    bills.forEach(bill => {
+      const a = bill.assignments.find(x => x.residentId === residentId)
+      if (!a) return
+      if (a.status === 'paid') totalPaid += a.amount
+      else if (a.status === 'pending') { totalPending += a.amount; if (bill.dueDate < now) totalOverdue += a.amount }
+    })
+    const recentBills = bills.sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5)
+    const recentPayments = await Payment.find({ residentId }).sort({ paidAt: -1 }).limit(5)
+    res.json({ success: true, data: { totalPending, totalOverdue, totalPaid, recentBills, recentPayments } })
+  } catch (error) {
+    console.error('❌ Error fetching resident bill summary:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Process payment
+app.post('/api/payments', async (req, res) => {
+  try {
+    const { billId, residentId, amount, paymentMethod, paymentDetails } = req.body
+    const transactionId = 'TXN' + Date.now() + Math.random().toString(36).slice(2, 8).toUpperCase()
+    const payment = new Payment({ billId, residentId, amount, paymentMethod, transactionId, status: 'completed', billTitle: paymentDetails?.billTitle || '', category: paymentDetails?.category || '', dueDate: paymentDetails?.dueDate })
+    await payment.save()
+    await Bill.findOneAndUpdate({ _id: billId, 'assignments.residentId': residentId }, { $set: { 'assignments.$.status': 'paid', 'assignments.$.paidAmount': amount, 'assignments.$.paidAt': new Date(), updatedAt: Date.now() } })
+    res.json({ success: true, data: { transactionId, payment } })
+  } catch (error) {
+    console.error('❌ Error processing payment:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get payment history for a resident
+app.get('/api/payments/resident/:residentId', async (req, res) => {
+  try {
+    const { residentId } = req.params
+    const { limit = 50, page = 1 } = req.query
+    const skip = (parseInt(page) - 1) * parseInt(limit)
+    const payments = await Payment.find({ residentId }).sort({ paidAt: -1 }).limit(parseInt(limit)).skip(skip)
+    const total = await Payment.countDocuments({ residentId })
+    res.json({ success: true, data: { payments, pagination: { total, page: parseInt(page), limit: parseInt(limit), pages: Math.ceil(total / parseInt(limit)) } } })
+  } catch (error) {
+    console.error('❌ Error fetching payment history:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 // Get visitor logs with filtering
 app.get('/api/visitors', async (req, res) => {
   try {
@@ -362,21 +635,35 @@ app.get('/api/visitors/stats', async (req, res) => {
     }
     
     const stats = await VisitorLog.aggregate([
+      // Normalize a single date field to use for filtering
+      {
+        $addFields: {
+          entryAt: { $ifNull: ['$entryTime', '$createdAt'] }
+        }
+      },
+      // Some documents may have string dates; attempt conversion
+      {
+        $addFields: {
+          entryAt: {
+            $cond: [
+              { $eq: [{ $type: '$entryAt' }, 'string'] },
+              { $toDate: '$entryAt' },
+              '$entryAt'
+            ]
+          }
+        }
+      },
       {
         $match: {
-          entryTime: { $gte: startDate }
+          entryAt: { $gte: startDate }
         }
       },
       {
         $group: {
           _id: null,
           totalVisitors: { $sum: 1 },
-          checkedIn: {
-            $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] }
-          },
-          checkedOut: {
-            $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] }
-          }
+          checkedIn: { $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] } },
+          checkedOut: { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } }
         }
       }
     ])
@@ -574,6 +861,45 @@ app.post('/api/complaints', async (req, res) => {
     const payload = req.body
     const complaint = new Complaint(payload)
     const saved = await complaint.save()
+    
+    // Send automated notification to admin about new complaint
+    try {
+      const notification = new Notification({
+        title: 'New Complaint Submitted',
+        message: `A new ${payload.category} complaint has been submitted by ${payload.residentName} (${payload.building}-${payload.flatNumber}): ${payload.title}`,
+        type: 'complaint',
+        priority: payload.priority === 'high' ? 'high' : 'medium',
+        targetRoles: ['admin'],
+        senderId: payload.residentAuthUserId || 'system',
+        senderName: payload.residentName || 'Resident',
+        metadata: {
+          complaintId: saved._id,
+          actionUrl: '/complaints'
+        }
+      })
+      await notification.save()
+      console.log('✅ Complaint notification sent to admin')
+
+      // Email the admin(s): if you have an admins collection, query it; otherwise fallback to console
+      try {
+        // TODO: Replace with real admin collection. For now, send a single configured admin email if set.
+        const ADMIN_FALLBACK_EMAIL = process.env.ADMIN_EMAIL || ''
+        const recipients = []
+        if (ADMIN_FALLBACK_EMAIL) recipients.push(ADMIN_FALLBACK_EMAIL)
+        if (payload.adminEmail) recipients.push(payload.adminEmail)
+        if (recipients.length > 0) {
+          const subject = `New Complaint: ${payload.title}`
+          const text = `Category: ${payload.category}\nResident: ${payload.residentName} (${payload.building}-${payload.flatNumber})\n\n${payload.description || ''}\n\nVisit: /complaints`
+          await Promise.allSettled(recipients.map(e => sendEmailViaServer(e, subject, null, text)))
+          console.log(`📧 Complaint email fan-out: ${recipients.length} attempted`)
+        }
+      } catch (mailErr) {
+        console.warn('⚠️ Complaint email fan-out failed:', mailErr.message)
+      }
+    } catch (notifError) {
+      console.error('❌ Error sending complaint notification:', notifError)
+    }
+    
     res.status(201).json({ success: true, complaint: saved })
   } catch (error) {
     console.error('❌ Error creating complaint:', error)
@@ -792,10 +1118,307 @@ app.post('/api/passes/:code/status', async (req, res) => {
   }
 })
 
+// ==================== NOTIFICATION API ROUTES ====================
+
+// Health check for notifications
+app.get('/api/notifications/health', (req, res) => {
+  res.json({ success: true, message: 'Notification service is running' })
+})
+
+// Email helper for sending notification emails via email-server
+const EMAIL_SERVER_URL = 'http://localhost:3001'
+const sendEmailViaServer = async (to, subject, html, text) => {
+  try {
+    const response = await fetch(`${EMAIL_SERVER_URL}/api/send-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, html, text })
+    })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error || 'Failed to send email')
+    return { success: true, messageId: result.messageId }
+  } catch (err) {
+    console.error('❌ Email send error:', err.message)
+    return { success: false, error: err.message }
+  }
+}
+
+// Create a new notification
+app.post('/api/notifications', async (req, res) => {
+  try {
+    const notificationData = req.body
+    const notification = new Notification(notificationData)
+    const savedNotification = await notification.save()
+    
+    console.log('✅ Notification created:', savedNotification._id)
+
+    // Optional: email fan-out when metadata includes emailBroadcast=true or type is bill/complaint
+    try {
+      const shouldEmail = notificationData.emailBroadcast === true || ['bill', 'complaint'].includes(notificationData.type)
+      if (shouldEmail) {
+        // Resolve recipient emails
+        let recipients = []
+        if (Array.isArray(notificationData.targetUsers) && notificationData.targetUsers.length > 0) {
+          // Look up residents by authUserId when possible
+          recipients = await Resident.find({ authUserId: { $in: notificationData.targetUsers } }, { email: 1 })
+            .then(rows => rows.map(r => r.email).filter(Boolean))
+        }
+        if ((!recipients || recipients.length === 0) && Array.isArray(notificationData.targetRoles) && notificationData.targetRoles.length > 0) {
+          // For residents role, send to all resident emails
+          if (notificationData.targetRoles.includes('resident')) {
+            const rows = await Resident.find({ email: { $ne: '' } }, { email: 1 })
+            recipients = rows.map(r => r.email).filter(Boolean)
+          }
+          // For admin/security/staff you might have separate collections; skip if unavailable
+        }
+
+        if (recipients && recipients.length > 0) {
+          const subject = `Notification: ${notificationData.title}`
+          const text = [
+            notificationData.message,
+            notificationData.metadata?.actionUrl ? `Action: ${notificationData.metadata.actionUrl}` : ''
+          ].filter(Boolean).join('\n\n')
+          // Fan-out with small concurrency to avoid blocking
+          const chunks = recipients
+          const results = await Promise.allSettled(chunks.map(email => sendEmailViaServer(email, subject, null, text)))
+          const sent = results.filter(r => r.status === 'fulfilled' && r.value?.success).length
+          console.log(`📧 Notification email fan-out: ${sent}/${recipients.length} sent`)
+        }
+      }
+    } catch (mailErr) {
+      console.warn('⚠️ Notification email fan-out skipped/failed:', mailErr.message)
+    }
+    res.json({ success: true, data: savedNotification })
+  } catch (error) {
+    console.error('❌ Error creating notification:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Send bulk notifications
+app.post('/api/notifications/bulk', async (req, res) => {
+  try {
+    const { title, message, type, priority, targetUsers, targetRoles, senderId, senderName, metadata } = req.body
+    
+    if (!targetUsers && !targetRoles) {
+      return res.status(400).json({ success: false, error: 'Either targetUsers or targetRoles must be specified' })
+    }
+
+    const notifications = []
+    
+    // Create notifications for specific users (takes precedence over roles)
+    if (targetUsers && targetUsers.length > 0) {
+      for (const userId of targetUsers) {
+        const notification = new Notification({
+          title,
+          message,
+          type,
+          priority,
+          targetUsers: [userId],
+          senderId,
+          senderName,
+          metadata
+        })
+        notifications.push(notification)
+      }
+    }
+    
+    // Create notifications for roles ONLY if no specific users provided
+    if ((!targetUsers || targetUsers.length === 0) && targetRoles && targetRoles.length > 0) {
+      for (const role of targetRoles) {
+        const notification = new Notification({
+          title,
+          message,
+          type,
+          priority,
+          targetRoles: [role],
+          senderId,
+          senderName,
+          metadata
+        })
+        notifications.push(notification)
+      }
+    }
+
+    const savedNotifications = await Notification.insertMany(notifications)
+    
+    console.log('✅ Bulk notifications created:', savedNotifications.length)
+    res.json({ 
+      success: true, 
+      data: { 
+        sentCount: savedNotifications.length,
+        notifications: savedNotifications 
+      } 
+    })
+  } catch (error) {
+    console.error('❌ Error creating bulk notifications:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get notifications for a specific user
+app.get('/api/notifications/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params
+    const { limit = 50, offset = 0, unreadOnly = false, role } = req.query
+    
+    let query = {
+      $or: [
+        { targetUsers: userId }
+      ]
+    }
+
+    // Include role-based notifications ONLY for the caller's role if provided
+    if (role) {
+      query.$or.push({ targetRoles: role })
+    }
+    
+    if (unreadOnly === 'true') {
+      query.isRead = false
+    }
+    
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(parseInt(offset))
+      .populate('metadata.billId')
+      .populate('metadata.complaintId')
+      .populate('metadata.visitorId')
+    
+    const totalCount = await Notification.countDocuments(query)
+    const unreadCount = await Notification.countDocuments({ ...query, isRead: false })
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        notifications, 
+        totalCount, 
+        unreadCount,
+        hasMore: (parseInt(offset) + notifications.length) < totalCount
+      } 
+    })
+  } catch (error) {
+    console.error('❌ Error fetching user notifications:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get notification statistics for a user
+app.get('/api/notifications/user/:userId/stats', async (req, res) => {
+  try {
+    const { userId } = req.params
+    
+    const query = {
+      $or: [
+        { targetUsers: userId },
+        { targetRoles: { $exists: true, $ne: [] } }
+      ]
+    }
+    
+    const [totalCount, unreadCount, byType, byPriority] = await Promise.all([
+      Notification.countDocuments(query),
+      Notification.countDocuments({ ...query, isRead: false }),
+      Notification.aggregate([
+        { $match: query },
+        { $group: { _id: '$type', count: { $sum: 1 } } }
+      ]),
+      Notification.aggregate([
+        { $match: query },
+        { $group: { _id: '$priority', count: { $sum: 1 } } }
+      ])
+    ])
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        totalCount, 
+        unreadCount,
+        byType: byType.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {}),
+        byPriority: byPriority.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {})
+      } 
+    })
+  } catch (error) {
+    console.error('❌ Error fetching notification stats:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Mark notification as read
+app.put('/api/notifications/:notificationId/read', async (req, res) => {
+  try {
+    const { notificationId } = req.params
+    
+    const notification = await Notification.findByIdAndUpdate(
+      notificationId,
+      { isRead: true, readAt: new Date() },
+      { new: true }
+    )
+    
+    if (!notification) {
+      return res.status(404).json({ success: false, error: 'Notification not found' })
+    }
+    
+    res.json({ success: true, data: notification })
+  } catch (error) {
+    console.error('❌ Error marking notification as read:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Mark all notifications as read for a user
+app.put('/api/notifications/user/:userId/read-all', async (req, res) => {
+  try {
+    const { userId } = req.params
+    
+    const query = {
+      $or: [
+        { targetUsers: userId },
+        { targetRoles: { $exists: true, $ne: [] } }
+      ],
+      isRead: false
+    }
+    
+    const result = await Notification.updateMany(
+      query,
+      { isRead: true, readAt: new Date() }
+    )
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        modifiedCount: result.modifiedCount,
+        message: `${result.modifiedCount} notifications marked as read`
+      } 
+    })
+  } catch (error) {
+    console.error('❌ Error marking all notifications as read:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Delete notification
+app.delete('/api/notifications/:notificationId', async (req, res) => {
+  try {
+    const { notificationId } = req.params
+    
+    const notification = await Notification.findByIdAndDelete(notificationId)
+    
+    if (!notification) {
+      return res.status(404).json({ success: false, error: 'Notification not found' })
+    }
+    
+    res.json({ success: true, data: { message: 'Notification deleted successfully' } })
+  } catch (error) {
+    console.error('❌ Error deleting notification:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 MongoDB API server running on http://localhost:${PORT}`)
   console.log(`📋 Health check: http://localhost:${PORT}/api/health`)
+  console.log(`🔔 Notification service: http://localhost:${PORT}/api/notifications/health`)
 })
 
 export default app

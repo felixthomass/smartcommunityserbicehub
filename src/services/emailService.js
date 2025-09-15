@@ -204,6 +204,70 @@ export const emailService = {
   },
 
   /**
+   * Send the same notification email to multiple recipients
+   */
+  sendBulkNotifications: async (recipients, subject, message) => {
+    try {
+      if (!Array.isArray(recipients) || recipients.length === 0) {
+        throw new Error('No recipients provided')
+      }
+
+      const results = await Promise.allSettled(
+        recipients.map((email) => emailService.sendNotification(email, subject, message))
+      )
+
+      const summary = results.reduce(
+        (acc, r) => {
+          if (r.status === 'fulfilled' && r.value?.success) acc.sent += 1
+          else acc.failed += 1
+          return acc
+        },
+        { sent: 0, failed: 0 }
+      )
+
+      return {
+        success: summary.failed === 0,
+        ...summary,
+        total: recipients.length
+      }
+    } catch (error) {
+      console.error('❌ Bulk notification email error:', error)
+      return {
+        success: false,
+        error: error.message
+      }
+    }
+  },
+
+  /**
+   * Helper: Send an email derived from a Notification object
+   * notification: { title, message, priority, type, metadata }
+   * recipients: array of email strings
+   */
+  sendNotificationForNotification: async (notification, recipients) => {
+    try {
+      if (!notification) throw new Error('Notification payload is required')
+      const subject = `Notification: ${notification.title || 'Update'}`
+      const lines = [
+        notification.message || '',
+        notification.priority ? `Priority: ${notification.priority}` : '',
+        notification.type ? `Type: ${notification.type}` : '',
+        notification.metadata?.actionUrl ? `Action: ${notification.metadata.actionUrl}` : ''
+      ].filter(Boolean)
+      const body = lines.join('\n\n')
+
+      if (Array.isArray(recipients) && recipients.length > 0) {
+        return await emailService.sendBulkNotifications(recipients, subject, body)
+      }
+
+      return { success: false, error: 'No recipients provided for notification email' }
+    } catch (error) {
+      console.error('❌ Notification-to-email error:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
    * Test email server connection
    */
   testConnection: async () => {

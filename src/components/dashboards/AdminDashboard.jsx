@@ -1,10 +1,15 @@
 import { useState, useEffect } from 'react'
-import { LogOut, Users, Shield, Plus, Eye, EyeOff, Search, Edit, Trash2, ArrowLeft, Filter } from 'lucide-react'
+import { LogOut, Users, Shield, Plus, Eye, EyeOff, Search, Edit, Trash2, ArrowLeft, Filter, CreditCard, Bell } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { USER_ROLES, STAFF_DEPARTMENTS } from '../../services/authService'
 import { mongoService } from '../../services/mongoService'
 import AdminUserManagementSimple from '../AdminUserManagementSimple'
 import { complaintService } from '../../services/complaintService'
+import { billService } from '../../services/billService'
+import { residentService } from '../../services/residentService'
+import { notificationService } from '../../services/notificationService'
+import { emailService } from '../../services/emailService'
+import { showSuccess, showError, showConfirm, showCredentials } from '../../utils/sweetAlert'
 
 const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const { authService } = useAuth()
@@ -39,6 +44,52 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [visitorStatus, setVisitorStatus] = useState('all') // all | checked_in | checked_out
   const [visitorDate, setVisitorDate] = useState('')
   const [visitorBuilding, setVisitorBuilding] = useState('all')
+
+  // Bill Management State
+  const [bills, setBills] = useState([])
+  const [billsLoading, setBillsLoading] = useState(false)
+  const [billView, setBillView] = useState('list') // 'list', 'create', 'edit', 'details'
+  const [selectedBill, setSelectedBill] = useState(null)
+  const [billStats, setBillStats] = useState({
+    totalBills: 0,
+    totalAmount: 0,
+    paidAmount: 0,
+    pendingAmount: 0,
+    overdueCount: 0
+  })
+  const [billForm, setBillForm] = useState({
+    title: '',
+    description: '',
+    category: 'electricity',
+    totalAmount: '',
+    dueDate: '',
+    splitType: 'equal',
+    selectedResidents: [],
+    customSplits: {},
+    apartmentSizes: {},
+    attachments: []
+  })
+  const [residents, setResidents] = useState([])
+  const [billFilters, setBillFilters] = useState({
+    category: 'all',
+    status: 'all',
+    search: ''
+  })
+
+  // Notification Management State
+  const [notifications, setNotifications] = useState([])
+  const [notificationsLoading, setNotificationsLoading] = useState(false)
+  const [notificationView, setNotificationView] = useState('list') // 'list', 'create'
+  const [notificationForm, setNotificationForm] = useState({
+    title: '',
+    message: '',
+    type: 'info',
+    priority: 'medium',
+    targetUsers: [],
+    targetRoles: [],
+    expiresAt: ''
+  })
+  const [allUsers, setAllUsers] = useState([])
 
   // Safety check for user object
   if (!user) {
@@ -113,6 +164,65 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         }
       })()
     }
+    if (currentPage === 'maintenance') {
+      ;(async () => {
+        try {
+          setBillsLoading(true)
+          // Load bills and residents
+          const [billsResult, residentsResult, statsResult] = await Promise.all([
+            billService.getAllBills(),
+            residentService.listResidents(),
+            billService.getBillStats()
+          ])
+          
+          if (billsResult.success) {
+            setBills(billsResult.data?.bills || [])
+          }
+          if (residentsResult.success) {
+            setResidents(residentsResult.residents || [])
+          }
+          if (statsResult.success) {
+            setBillStats(statsResult.data)
+          }
+        } catch (e) {
+          console.error('Error loading bill data:', e)
+          setBills([])
+          setResidents([])
+        } finally {
+          setBillsLoading(false)
+        }
+      })()
+    }
+    if (currentPage === 'notifications') {
+      ;(async () => {
+        try {
+          setNotificationsLoading(true)
+          // Load notifications and all users
+          const [notificationsResult, residentsResult, staffResult] = await Promise.all([
+            notificationService.getUserNotifications(user.id, { limit: 100, role: 'admin' }),
+            residentService.listResidents(),
+            authService.getStaffUsers()
+          ])
+          
+          if (notificationsResult.success) {
+            setNotifications(notificationsResult.data?.notifications || [])
+          }
+          
+          // Combine all users for targeting
+          const allUsersList = [
+            ...(residentsResult.residents || []).map(r => ({ ...r, role: 'resident' })),
+            ...(staffResult.users || []).map(s => ({ ...s, role: s.role }))
+          ]
+          setAllUsers(allUsersList)
+        } catch (e) {
+          console.error('Error loading notification data:', e)
+          setNotifications([])
+          setAllUsers([])
+        } finally {
+          setNotificationsLoading(false)
+        }
+      })()
+    }
   }, [currentPage])
 
   // Password validation function
@@ -182,7 +292,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           '\n\n✅ Credentials have been sent to the user\'s email address.' :
           '\n\n⚠️ Email sending failed. Please share the credentials manually.'
 
-        alert(`${staffForm.role.charAt(0).toUpperCase() + staffForm.role.slice(1)} created successfully!\n\nLogin Credentials:\nEmail: ${staffForm.email}\nPassword: ${finalPassword}\n\nPlease save these credentials securely.${emailStatus}`)
+        showCredentials(
+          `${staffForm.role.charAt(0).toUpperCase() + staffForm.role.slice(1)} Created Successfully!`,
+          staffForm.email,
+          finalPassword,
+          emailStatus
+        )
         
         // Reset form
         setStaffForm({
@@ -200,11 +315,11 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         setStaffView('list')
       } else {
         console.error('Staff creation failed:', result.error)
-        alert('❌ Error creating user: ' + (result.error || 'Unknown error'))
+        showError('Error Creating User', result.error || 'Unknown error occurred.')
       }
     } catch (error) {
       console.error('Error creating staff:', error)
-      alert('❌ Error creating user: ' + error.message)
+      showError('Error Creating User', error.message || 'Please try again later.')
     } finally {
       setIsCreatingStaff(false)
     }
@@ -219,14 +334,14 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     try {
       const result = await authService.deleteStaffUser(staffId)
       if (result.success) {
-        alert('Staff member deleted successfully')
+        showSuccess('Staff Member Deleted', 'The staff member has been removed successfully.')
         loadStaffList()
       } else {
-        alert('Error deleting staff: ' + (result.error || 'Unknown error'))
+        showError('Error Deleting Staff', result.error || 'Unknown error occurred.')
       }
     } catch (error) {
       console.error('Error deleting staff:', error)
-      alert('Error deleting staff: ' + error.message)
+      showError('Error Deleting Staff', error.message || 'Please try again later.')
     }
   }
 
@@ -249,12 +364,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     e.preventDefault()
 
     if (!staffForm.name || !staffForm.email || !staffForm.role) {
-      alert('Please fill in all required fields')
+      showError('Missing Required Fields', 'Please fill in all required fields.')
       return
     }
 
     if (staffForm.role === USER_ROLES.STAFF && !staffForm.staffDepartment) {
-      alert('Please select a department for staff members')
+      showError('Department Required', 'Please select a department for staff members.')
       return
     }
 
@@ -269,7 +384,7 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       })
 
       if (result.success) {
-        alert(`✅ ${staffForm.role} user updated successfully!`)
+        showSuccess('User Updated Successfully!', `The ${staffForm.role} user has been updated.`)
 
         // Reset form and editing state
         setStaffForm({
@@ -286,11 +401,11 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         await loadStaffList()
         setStaffView('list')
       } else {
-        alert('❌ Failed to update user: ' + result.error)
+        showError('Failed to Update User', result.error || 'Please try again later.')
       }
     } catch (error) {
       console.error('Error updating staff:', error)
-      alert('❌ Error updating staff: ' + error.message)
+      showError('Error Updating Staff', error.message || 'Please try again later.')
     } finally {
       setIsCreatingStaff(false)
     }
@@ -317,6 +432,287 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     const matchesRole = filterRole === 'all' || staff.role === filterRole
     return matchesSearch && matchesRole
   })
+
+  // Bill Management Functions
+  const handleCreateBill = async (e) => {
+    e.preventDefault()
+    
+    if (!billForm.title || !billForm.totalAmount || !billForm.dueDate || billForm.selectedResidents.length === 0) {
+      showError('Missing Required Information', 'Please fill in all required fields and select at least one resident.')
+      return
+    }
+
+    try {
+      setBillsLoading(true)
+      
+      // Calculate bill split
+      const assignments = billService.calculateBillSplit({
+        type: billForm.splitType,
+        totalAmount: parseFloat(billForm.totalAmount),
+        residents: residents.filter(r => billForm.selectedResidents.includes(r.authUserId)),
+        customSplits: billForm.customSplits,
+        apartmentSizes: billForm.apartmentSizes
+      })
+
+      const billData = {
+        title: billForm.title,
+        description: billForm.description,
+        category: billForm.category,
+        totalAmount: parseFloat(billForm.totalAmount),
+        dueDate: billForm.dueDate,
+        splitType: billForm.splitType,
+        assignments,
+        createdBy: user.id,
+        attachments: billForm.attachments
+      }
+
+      const result = await billService.createBill(billData)
+      
+      if (result.success) {
+        showSuccess('Bill Created Successfully!', 'The bill has been created and assigned to residents.')
+        setBillForm({
+          title: '',
+          description: '',
+          category: 'electricity',
+          totalAmount: '',
+          dueDate: '',
+          splitType: 'equal',
+          selectedResidents: [],
+          customSplits: {},
+          apartmentSizes: {},
+          attachments: []
+        })
+        setBillView('list')
+        
+        // Reload data
+        const [billsResult, statsResult] = await Promise.all([
+          billService.getAllBills(),
+          billService.getBillStats()
+        ])
+        
+        if (billsResult.success) setBills(billsResult.data?.bills || [])
+        if (statsResult.success) setBillStats(statsResult.data)
+      } else {
+        showError('Failed to Create Bill', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error creating bill:', error)
+      showError('Error Creating Bill', error.message || 'Please check your connection and try again.')
+    } finally {
+      setBillsLoading(false)
+    }
+  }
+
+  const handleUpdateBill = async (e) => {
+    e.preventDefault()
+    
+    if (!selectedBill) return
+
+    try {
+      setBillsLoading(true)
+      
+      // Recalculate assignments if split changed
+      const assignments = billService.calculateBillSplit({
+        type: billForm.splitType,
+        totalAmount: parseFloat(billForm.totalAmount),
+        residents: residents.filter(r => billForm.selectedResidents.includes(r.authUserId)),
+        customSplits: billForm.customSplits,
+        apartmentSizes: billForm.apartmentSizes
+      })
+
+      const updateData = {
+        title: billForm.title,
+        description: billForm.description,
+        category: billForm.category,
+        totalAmount: parseFloat(billForm.totalAmount),
+        dueDate: billForm.dueDate,
+        splitType: billForm.splitType,
+        assignments,
+        attachments: billForm.attachments
+      }
+
+      const result = await billService.updateBill(selectedBill._id, updateData)
+      
+      if (result.success) {
+        showSuccess('Bill Updated Successfully!', 'The bill has been updated.')
+        setBillView('list')
+        setSelectedBill(null)
+        
+        // Reload data
+        const [billsResult, statsResult] = await Promise.all([
+          billService.getAllBills(),
+          billService.getBillStats()
+        ])
+        
+        if (billsResult.success) setBills(billsResult.data?.bills || [])
+        if (statsResult.success) setBillStats(statsResult.data)
+      } else {
+        showError('Failed to Update Bill', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error updating bill:', error)
+      showError('Error Updating Bill', error.message || 'Please try again later.')
+    } finally {
+      setBillsLoading(false)
+    }
+  }
+
+  const handleDeleteBill = async (billId) => {
+    if (!confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
+      return
+    }
+
+    try {
+      setBillsLoading(true)
+      const result = await billService.deleteBill(billId)
+      
+      if (result.success) {
+        showSuccess('Bill Deleted Successfully!', 'The bill has been removed.')
+        
+        // Reload data
+        const [billsResult, statsResult] = await Promise.all([
+          billService.getAllBills(),
+          billService.getBillStats()
+        ])
+        
+        if (billsResult.success) setBills(billsResult.data?.bills || [])
+        if (statsResult.success) setBillStats(statsResult.data)
+      } else {
+        showError('Failed to Delete Bill', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error deleting bill:', error)
+      showError('Error Deleting Bill', error.message || 'Please try again later.')
+    } finally {
+      setBillsLoading(false)
+    }
+  }
+
+  const handleEditBill = (bill) => {
+    setSelectedBill(bill)
+    setBillForm({
+      title: bill.title,
+      description: bill.description || '',
+      category: bill.category,
+      totalAmount: bill.totalAmount.toString(),
+      dueDate: bill.dueDate.split('T')[0], // Convert to YYYY-MM-DD format
+      splitType: bill.splitType,
+      selectedResidents: bill.assignments?.map(a => a.residentId) || [],
+      customSplits: bill.assignments?.reduce((acc, a) => ({ ...acc, [a.residentId]: a.amount }), {}) || {},
+      apartmentSizes: {},
+      attachments: bill.attachments || []
+    })
+    setBillView('edit')
+  }
+
+  // Filter bills
+  const filteredBills = bills.filter(bill => {
+    const matchesCategory = billFilters.category === 'all' || bill.category === billFilters.category
+    const matchesStatus = billFilters.status === 'all' || bill.status === billFilters.status
+    const matchesSearch = !billFilters.search || 
+      bill.title.toLowerCase().includes(billFilters.search.toLowerCase()) ||
+      bill.description?.toLowerCase().includes(billFilters.search.toLowerCase())
+    
+    return matchesCategory && matchesStatus && matchesSearch
+  })
+
+  // Notification Management Functions
+  const handleCreateNotification = async (e) => {
+    e.preventDefault()
+    
+    if (!notificationForm.title || !notificationForm.message || 
+        (notificationForm.targetUsers.length === 0 && notificationForm.targetRoles.length === 0)) {
+      showError('Missing Required Information', 'Please fill in all required fields and select at least one target.')
+      return
+    }
+
+    try {
+      setNotificationsLoading(true)
+      
+      const notificationData = {
+        title: notificationForm.title,
+        message: notificationForm.message,
+        type: notificationForm.type,
+        priority: notificationForm.priority,
+        targetUsers: notificationForm.targetUsers,
+        targetRoles: notificationForm.targetRoles,
+        senderId: user.id,
+        senderName: user.name || 'Admin',
+        expiresAt: notificationForm.expiresAt ? new Date(notificationForm.expiresAt).toISOString() : null
+      }
+
+      const result = await notificationService.sendBulkNotification(notificationData)
+      
+      if (result.success) {
+        // Email the selected audience using their emails
+        try {
+          const recipients = [
+            ...(allUsers || [])
+              .filter(u => notificationForm.targetUsers.includes(u.authUserId || u.id))
+              .map(u => u.email)
+              .filter(Boolean)
+          ]
+          if (recipients.length > 0) {
+            await emailService.sendNotificationForNotification(notificationData, recipients)
+          }
+        } catch (mailErr) {
+          console.warn('Email broadcast skipped/failed:', mailErr)
+        }
+        showSuccess('Notification Sent Successfully!', `Notification sent to ${result.data.sentCount} recipients.`)
+        setNotificationForm({
+          title: '',
+          message: '',
+          type: 'info',
+          priority: 'medium',
+          targetUsers: [],
+          targetRoles: [],
+          expiresAt: ''
+        })
+        setNotificationView('list')
+        
+        // Reload notifications
+        const notificationsResult = await notificationService.getUserNotifications(user.id, { limit: 100, role: 'admin' })
+        if (notificationsResult.success) {
+          setNotifications(notificationsResult.data?.notifications || [])
+        }
+      } else {
+        showError('Failed to Send Notification', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error creating notification:', error)
+      showError('Error Creating Notification', error.message || 'Please check your connection and try again.')
+    } finally {
+      setNotificationsLoading(false)
+    }
+  }
+
+  const handleDeleteNotification = async (notificationId) => {
+    if (!confirm('Are you sure you want to delete this notification?')) {
+      return
+    }
+
+    try {
+      setNotificationsLoading(true)
+      const result = await notificationService.deleteNotification(notificationId)
+      
+      if (result.success) {
+        showSuccess('Notification Deleted Successfully!', 'The notification has been removed.')
+        
+        // Reload notifications
+        const notificationsResult = await notificationService.getUserNotifications(user.id, { limit: 100, role: 'admin' })
+        if (notificationsResult.success) {
+          setNotifications(notificationsResult.data?.notifications || [])
+        }
+      } else {
+        showError('Failed to Delete Notification', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error deleting notification:', error)
+      showError('Error Deleting Notification', error.message || 'Please try again later.')
+    } finally {
+      setNotificationsLoading(false)
+    }
+  }
 
 
 
@@ -748,9 +1144,528 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     if (currentPage === 'maintenance') {
       return (
         <div className="space-y-6">
+          {/* Bill Statistics */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <CreditCard className="w-8 h-8 text-blue-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{billStats.totalBills}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Total Bills</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <CreditCard className="w-8 h-8 text-green-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billStats.paidAmount?.toLocaleString() || 0}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Collected</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-orange-50 dark:bg-orange-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <CreditCard className="w-8 h-8 text-orange-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billStats.pendingAmount?.toLocaleString() || 0}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Pending</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <CreditCard className="w-8 h-8 text-red-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{billStats.overdueCount || 0}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Overdue</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Bill Management Interface */}
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-            <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Maintenance</h3>
-            <p className="text-gray-600 dark:text-gray-400">Track maintenance tasks (coming soon).</p>
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                {billView !== 'list' && (
+                  <button
+                    onClick={() => {
+                      setBillView('list')
+                      setSelectedBill(null)
+                      setBillForm({
+                        title: '',
+                        description: '',
+                        category: 'electricity',
+                        totalAmount: '',
+                        dueDate: '',
+                        splitType: 'equal',
+                        selectedResidents: [],
+                        customSplits: {},
+                        apartmentSizes: {},
+                        attachments: []
+                      })
+                    }}
+                    className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                    Back to Bills
+                  </button>
+                )}
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  {billView === 'list' ? 'Bill Management' :
+                   billView === 'create' ? 'Create New Bill' :
+                   billView === 'edit' ? 'Edit Bill' : 'Bill Details'}
+                </h3>
+              </div>
+              {billView === 'list' && (
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setBillsLoading(true)
+                      Promise.all([
+                        billService.getAllBills(),
+                        billService.getBillStats()
+                      ]).then(([billsResult, statsResult]) => {
+                        if (billsResult.success) setBills(billsResult.data?.bills || [])
+                        if (statsResult.success) setBillStats(statsResult.data)
+                      }).finally(() => setBillsLoading(false))
+                    }}
+                    className="flex items-center gap-2 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+                    disabled={billsLoading}
+                  >
+                    🔄 {billsLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                  <button
+                    onClick={() => setBillView('create')}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Plus className="w-5 h-5" />
+                    Create Bill
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Bill List View */}
+            {billView === 'list' && (
+              <div className="space-y-6">
+                {/* Filters */}
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                    <input
+                      type="text"
+                      placeholder="Search bills..."
+                      value={billFilters.search}
+                      onChange={(e) => setBillFilters({...billFilters, search: e.target.value})}
+                      className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <select
+                    value={billFilters.category}
+                    onChange={(e) => setBillFilters({...billFilters, category: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">All Categories</option>
+                    <option value="electricity">Electricity</option>
+                    <option value="water">Water</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="gas">Gas</option>
+                    <option value="internet">Internet</option>
+                    <option value="security">Security</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <select
+                    value={billFilters.status}
+                    onChange={(e) => setBillFilters({...billFilters, status: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="active">Active</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>
+
+                {/* Bills List */}
+                {billsLoading ? (
+                  <div className="text-center py-8">
+                    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-gray-600 dark:text-gray-400">Loading bills...</p>
+                  </div>
+                ) : filteredBills.length === 0 ? (
+                  <div className="text-center py-8">
+                    <CreditCard className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600 dark:text-gray-400">No bills found</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full table-auto">
+                      <thead>
+                        <tr className="border-b border-gray-200 dark:border-gray-700">
+                          <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Bill</th>
+                          <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Category</th>
+                          <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Amount</th>
+                          <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Due Date</th>
+                          <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Status</th>
+                          <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredBills.map((bill) => (
+                          <tr
+                            key={bill._id}
+                            className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
+                          >
+                            <td className="py-3 px-4">
+                              <div>
+                                <p className="font-medium text-gray-900 dark:text-white">{bill.title}</p>
+                                <p className="text-sm text-gray-600 dark:text-gray-400">{bill.description}</p>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded capitalize">
+                                {bill.category}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <p className="font-medium text-gray-900 dark:text-white">₹{bill.totalAmount?.toLocaleString()}</p>
+                              <p className="text-sm text-gray-600 dark:text-gray-400">{bill.assignments?.length || 0} residents</p>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div>
+                                <p className="text-gray-900 dark:text-white">
+                                  {new Date(bill.dueDate).toLocaleDateString()}
+                                </p>
+                                <p className={`text-sm ${new Date(bill.dueDate) < new Date() ? 'text-red-600' : 'text-gray-600 dark:text-gray-400'}`}>
+                                  {new Date(bill.dueDate) < new Date() ? 'Overdue' : 'Active'}
+                                </p>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                bill.status === 'active'
+                                  ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                                  : bill.status === 'completed'
+                                  ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
+                                  : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                              }`}>
+                                {bill.status}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => {
+                                    setSelectedBill(bill)
+                                    setBillView('details')
+                                  }}
+                                  className="p-1 text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                                  title="View Details"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleEditBill(bill)}
+                                  className="p-1 text-green-600 hover:text-green-800 dark:text-green-400"
+                                  title="Edit"
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteBill(bill._id)}
+                                  className="p-1 text-red-600 hover:text-red-800 dark:text-red-400"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Create/Edit Bill Form */}
+            {(billView === 'create' || billView === 'edit') && (
+              <form onSubmit={billView === 'create' ? handleCreateBill : handleUpdateBill} className="space-y-6">
+                {/* Basic Information */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Bill Title *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={billForm.title}
+                      onChange={(e) => setBillForm({...billForm, title: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      placeholder="e.g., December 2024 Electricity Bill"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Category *
+                    </label>
+                    <select
+                      required
+                      value={billForm.category}
+                      onChange={(e) => setBillForm({...billForm, category: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="electricity">Electricity</option>
+                      <option value="water">Water</option>
+                      <option value="maintenance">Maintenance</option>
+                      <option value="gas">Gas</option>
+                      <option value="internet">Internet</option>
+                      <option value="security">Security</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Total Amount (₹) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      min="0"
+                      step="0.01"
+                      value={billForm.totalAmount}
+                      onChange={(e) => setBillForm({...billForm, totalAmount: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      placeholder="Enter total bill amount"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Due Date *
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={billForm.dueDate}
+                      onChange={(e) => setBillForm({...billForm, dueDate: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Description
+                  </label>
+                  <textarea
+                    value={billForm.description}
+                    onChange={(e) => setBillForm({...billForm, description: e.target.value})}
+                    rows={3}
+                    className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    placeholder="Enter bill description"
+                  />
+                </div>
+
+                {/* Split Configuration */}
+                <div className="border-t pt-6">
+                  <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Bill Split Configuration</h4>
+                  
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Split Type *
+                    </label>
+                    <select
+                      value={billForm.splitType}
+                      onChange={(e) => setBillForm({...billForm, splitType: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="equal">Equal Split</option>
+                      <option value="custom">Custom Amounts</option>
+                      <option value="size_based">Size Based</option>
+                    </select>
+                  </div>
+
+                  {/* Resident Selection */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Select Residents *
+                    </label>
+                    <div className="max-h-48 overflow-y-auto border border-gray-300 dark:border-gray-600 rounded-lg p-3">
+                      {residents.map((resident) => (
+                        <label key={resident.authUserId} className="flex items-center gap-3 p-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded">
+                          <input
+                            type="checkbox"
+                            checked={billForm.selectedResidents.includes(resident.authUserId)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setBillForm({
+                                  ...billForm,
+                                  selectedResidents: [...billForm.selectedResidents, resident.authUserId]
+                                })
+                              } else {
+                                setBillForm({
+                                  ...billForm,
+                                  selectedResidents: billForm.selectedResidents.filter(id => id !== resident.authUserId)
+                                })
+                              }
+                            }}
+                            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-gray-900 dark:text-white">{resident.name}</p>
+                            <p className="text-xs text-gray-600 dark:text-gray-400">{resident.building}-{resident.flatNumber}</p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Custom Split Amounts */}
+                  {billForm.splitType === 'custom' && billForm.selectedResidents.length > 0 && (
+                    <div className="mb-4">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Custom Amounts
+                      </label>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {billForm.selectedResidents.map((residentId) => {
+                          const resident = residents.find(r => r.authUserId === residentId)
+                          return (
+                            <div key={residentId} className="flex items-center gap-3">
+                              <div className="flex-1">
+                                <p className="text-sm font-medium text-gray-900 dark:text-white">{resident?.name}</p>
+                                <p className="text-xs text-gray-600 dark:text-gray-400">{resident?.building}-{resident?.flatNumber}</p>
+                              </div>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={billForm.customSplits[residentId] || ''}
+                                onChange={(e) => setBillForm({
+                                  ...billForm,
+                                  customSplits: {
+                                    ...billForm.customSplits,
+                                    [residentId]: parseFloat(e.target.value) || 0
+                                  }
+                                })}
+                                className="w-24 p-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                                placeholder="₹"
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Submit Buttons */}
+                <div className="flex justify-end gap-3 pt-6">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillView('list')
+                      setSelectedBill(null)
+                    }}
+                    className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={billsLoading}
+                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {billsLoading ? 'Processing...' : billView === 'create' ? 'Create Bill' : 'Update Bill'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Bill Details View */}
+            {billView === 'details' && selectedBill && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* Bill Information */}
+                  <div>
+                    <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Bill Information</h4>
+                    <div className="space-y-3">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Title:</span>
+                        <span className="font-medium text-gray-900 dark:text-white">{selectedBill.title}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Category:</span>
+                        <span className="font-medium text-gray-900 dark:text-white capitalize">{selectedBill.category}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Total Amount:</span>
+                        <span className="font-medium text-gray-900 dark:text-white">₹{selectedBill.totalAmount?.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Due Date:</span>
+                        <span className="font-medium text-gray-900 dark:text-white">{new Date(selectedBill.dueDate).toLocaleDateString()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Status:</span>
+                        <span className={`font-medium capitalize ${selectedBill.status === 'active' ? 'text-green-600' : 'text-gray-600'}`}>{selectedBill.status}</span>
+                      </div>
+                      {selectedBill.description && (
+                        <div>
+                          <span className="text-gray-600 dark:text-gray-400">Description:</span>
+                          <p className="mt-1 text-gray-900 dark:text-white">{selectedBill.description}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Resident Assignments */}
+                  <div>
+                    <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Resident Assignments</h4>
+                    <div className="space-y-2">
+                      {selectedBill.assignments?.map((assignment) => (
+                        <div key={assignment.residentId} className="flex justify-between items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                          <div>
+                            <p className="font-medium text-gray-900 dark:text-white">{assignment.residentName}</p>
+                            <p className="text-sm text-gray-600 dark:text-gray-400">{assignment.building}-{assignment.flatNumber}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-medium text-gray-900 dark:text-white">₹{assignment.amount}</p>
+                            <span className={`text-xs px-2 py-1 rounded ${
+                              assignment.status === 'paid' 
+                                ? 'bg-green-100 text-green-800' 
+                                : 'bg-orange-100 text-orange-800'
+                            }`}>
+                              {assignment.status}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-4 pt-6 border-t border-gray-200 dark:border-gray-700">
+                  <button
+                    onClick={() => handleEditBill(selectedBill)}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Edit className="w-4 h-4" />
+                    Edit Bill
+                  </button>
+                  <button
+                    onClick={() => handleDeleteBill(selectedBill._id)}
+                    className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete Bill
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )
@@ -1094,6 +2009,322 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
             <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Reports</h3>
             <p className="text-gray-600 dark:text-gray-400">Analytics and reports (coming soon).</p>
+          </div>
+        </div>
+      )
+    }
+
+    if (currentPage === 'notifications') {
+      return (
+        <div className="space-y-6">
+          {/* Notification Management Interface */}
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                {notificationView !== 'list' && (
+                  <button
+                    onClick={() => {
+                      setNotificationView('list')
+                      setNotificationForm({
+                        title: '',
+                        message: '',
+                        type: 'info',
+                        priority: 'medium',
+                        targetUsers: [],
+                        targetRoles: [],
+                        expiresAt: ''
+                      })
+                    }}
+                    className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                    Back to Notifications
+                  </button>
+                )}
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  {notificationView === 'list' ? 'Notification Management' : 'Create New Notification'}
+                </h3>
+              </div>
+              {notificationView === 'list' && (
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setNotificationsLoading(true)
+                      notificationService.getUserNotifications(user.id, { limit: 100, role: 'admin' }).then(result => {
+                        if (result.success) {
+                          setNotifications(result.data?.notifications || [])
+                        }
+                      }).finally(() => setNotificationsLoading(false))
+                    }}
+                    className="flex items-center gap-2 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+                    disabled={notificationsLoading}
+                  >
+                    🔄 {notificationsLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                  <button
+                    onClick={() => setNotificationView('create')}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Plus className="w-5 h-5" />
+                    Create Notification
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Notification List View */}
+            {notificationView === 'list' && (
+              <div className="space-y-6">
+                {notificationsLoading ? (
+                  <div className="text-center py-8">
+                    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-gray-600 dark:text-gray-400">Loading notifications...</p>
+                  </div>
+                ) : notifications.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Bell className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600 dark:text-gray-400">No notifications found</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {notifications.map((notification) => (
+                      <div key={notification._id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <h4 className="font-medium text-gray-900 dark:text-white">{notification.title}</h4>
+                              <span className={`px-2 py-1 text-xs rounded ${
+                                notification.type === 'bill' ? 'bg-blue-100 text-blue-800' :
+                                notification.type === 'complaint' ? 'bg-red-100 text-red-800' :
+                                notification.type === 'info' ? 'bg-gray-100 text-gray-800' :
+                                'bg-green-100 text-green-800'
+                              }`}>
+                                {notification.type}
+                              </span>
+                              <span className={`px-2 py-1 text-xs rounded ${
+                                notification.priority === 'urgent' ? 'bg-red-100 text-red-800' :
+                                notification.priority === 'high' ? 'bg-orange-100 text-orange-800' :
+                                notification.priority === 'medium' ? 'bg-blue-100 text-blue-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {notification.priority}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">{notification.message}</p>
+                            <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-500">
+                              <span>From: {notification.senderName}</span>
+                              <span>Created: {new Date(notification.createdAt).toLocaleString()}</span>
+                              {notification.targetRoles.length > 0 && (
+                                <span>Target: {notification.targetRoles.join(', ')}</span>
+                              )}
+                              {notification.targetUsers.length > 0 && (
+                                <span>Users: {notification.targetUsers.length}</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleDeleteNotification(notification._id)}
+                              className="p-1 text-red-600 hover:text-red-800 dark:text-red-400"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Create Notification Form */}
+            {notificationView === 'create' && (
+              <form onSubmit={handleCreateNotification} className="space-y-6">
+                {/* Basic Information */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Title *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={notificationForm.title}
+                      onChange={(e) => setNotificationForm({...notificationForm, title: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      placeholder="Enter notification title"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Type *
+                    </label>
+                    <select
+                      required
+                      value={notificationForm.type}
+                      onChange={(e) => setNotificationForm({...notificationForm, type: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="info">Information</option>
+                      <option value="warning">Warning</option>
+                      <option value="success">Success</option>
+                      <option value="error">Error</option>
+                      <option value="bill">Bill Related</option>
+                      <option value="complaint">Complaint Related</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Priority *
+                    </label>
+                    <select
+                      required
+                      value={notificationForm.priority}
+                      onChange={(e) => setNotificationForm({...notificationForm, priority: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Expires At
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={notificationForm.expiresAt}
+                      onChange={(e) => setNotificationForm({...notificationForm, expiresAt: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Message *
+                  </label>
+                  <textarea
+                    required
+                    value={notificationForm.message}
+                    onChange={(e) => setNotificationForm({...notificationForm, message: e.target.value})}
+                    rows={4}
+                    className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    placeholder="Enter notification message"
+                  />
+                </div>
+
+                {/* Target Selection */}
+                <div className="border-t pt-6">
+                  <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Target Recipients</h4>
+                  
+                  {/* Role-based targeting */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Target Roles
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {['resident', 'staff', 'security'].map((role) => (
+                        <label key={role} className="flex items-center gap-2 p-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
+                          <input
+                            type="checkbox"
+                            checked={notificationForm.targetRoles.includes(role)}
+                            onChange={(e) => {
+                              const newRoles = e.target.checked
+                                ? [...notificationForm.targetRoles, role]
+                                : notificationForm.targetRoles.filter(r => r !== role)
+
+                              // Auto-select specific users matching selected roles
+                              const roleSet = new Set(newRoles)
+                              const selectedUserIds = (allUsers || [])
+                                .filter(u => roleSet.has(u.role))
+                                .map(u => u.authUserId || u.id)
+
+                              setNotificationForm({
+                                ...notificationForm,
+                                targetRoles: newRoles,
+                                targetUsers: selectedUserIds
+                              })
+                            }}
+                            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-900 dark:text-white capitalize">{role}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* User-based targeting */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Target Specific Users
+                    </label>
+                    <div className="max-h-48 overflow-y-auto border border-gray-300 dark:border-gray-600 rounded-lg p-3">
+                      {allUsers.map((userItem) => (
+                        <label key={userItem.authUserId || userItem.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded">
+                          <input
+                            type="checkbox"
+                            checked={notificationForm.targetUsers.includes(userItem.authUserId || userItem.id)}
+                            onChange={(e) => {
+                              const userId = userItem.authUserId || userItem.id
+                              if (e.target.checked) {
+                                setNotificationForm({
+                                  ...notificationForm,
+                                  targetUsers: [...notificationForm.targetUsers, userId]
+                                })
+                              } else {
+                                setNotificationForm({
+                                  ...notificationForm,
+                                  targetUsers: notificationForm.targetUsers.filter(id => id !== userId)
+                                })
+                              }
+                            }}
+                            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-gray-900 dark:text-white">{userItem.name || userItem.email}</p>
+                            <p className="text-xs text-gray-600 dark:text-gray-400 capitalize">{userItem.role}</p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Submit Buttons */}
+                <div className="flex justify-end gap-3 pt-6">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNotificationView('list')
+                      setNotificationForm({
+                        title: '',
+                        message: '',
+                        type: 'info',
+                        priority: 'medium',
+                        targetUsers: [],
+                        targetRoles: [],
+                        expiresAt: ''
+                      })
+                    }}
+                    className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={notificationsLoading}
+                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {notificationsLoading ? 'Sending...' : 'Send Notification'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )

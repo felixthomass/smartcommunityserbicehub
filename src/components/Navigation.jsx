@@ -16,7 +16,8 @@ import {
   Wrench,
   Eye,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  CreditCard
 } from 'lucide-react'
 
 const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) => {
@@ -41,7 +42,7 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
 
     const roleSpecificItems = {
       resident: [
-        { id: 'maintenance', label: 'Maintenance', icon: Wrench },
+        { id: 'payments', label: 'My Bills', icon: CreditCard },
         { id: 'visitors', label: 'Visitor Pass', icon: QrCode },
         { id: 'complaints', label: 'Complaints', icon: FileText },
         { id: 'chat', label: 'Chat', icon: Eye }
@@ -49,14 +50,14 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
       admin: [
         { id: 'admin-users', label: 'User Management', icon: Users },
         { id: 'staff-security', label: 'Staff/Security', icon: Shield },
-        { id: 'maintenance', label: 'Maintenance', icon: Wrench },
+        { id: 'maintenance', label: 'Bill Management', icon: CreditCard },
         { id: 'visitors', label: 'Visitor Management', icon: QrCode },
         { id: 'complaints', label: 'Complaints', icon: FileText },
         { id: 'settings', label: 'Settings', icon: Settings }
       ],
       staff: [
         { id: 'tasks', label: 'My Tasks', icon: Wrench },
-        { id: 'maintenance', label: 'Maintenance', icon: Wrench }
+        { id: 'maintenance', label: 'Bill Management', icon: CreditCard }
       ],
       security: [
         { id: 'visitors', label: 'Visitor Log', icon: Eye },
