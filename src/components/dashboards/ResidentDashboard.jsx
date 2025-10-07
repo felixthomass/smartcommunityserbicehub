@@ -2,16 +2,111 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { 
   Home, CreditCard, MessageSquare, QrCode, Bell, 
   User, LogOut, Settings, Calendar, Users, 
-  Building2, Phone, Mail, MapPin
+  Building2, Phone, Mail, MapPin, Share2
 } from 'lucide-react'
 
 import { residentService } from '../../services/residentService'
 import { chatService } from '../../services/chatService'
+import { chatFileService } from '../../services/chatFileService'
 import { complaintService } from '../../services/complaintService'
 import { passService } from '../../services/passService'
 import { billService } from '../../services/billService'
 import { notificationService } from '../../services/notificationService'
+import { announcementService } from '../../services/announcementService'
+import { authService } from '../../services/authService'
+import { deliveryService } from '../../services/deliveryService'
+import { mongoService } from '../../services/mongoService'
 import { showSuccess, showError, showConfirm, notify } from '../../utils/sweetAlert'
+import ResidentNotifications from '../ResidentNotifications'
+import CommunityMap from '../CommunityMap'
+import ResidentVerification from '../ResidentVerification'
+const ResidentDeliveries = ({ building, flatNumber, user }) => {
+  const [loading, setLoading] = useState(false)
+  const [items, setItems] = useState([])
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('all')
+
+  useEffect(() => {
+    const load = async () => {
+      if (!building && !flatNumber) return
+      setLoading(true)
+      try {
+        const result = await deliveryService.getResidentDeliveries(building, flatNumber, { limit: 100 })
+        if (result.success) setItems(result.data || [])
+        else setItems([])
+      } finally { setLoading(false) }
+    }
+    load()
+  }, [building, flatNumber])
+
+  const filtered = items.filter(d => {
+    const q = search.trim().toLowerCase()
+    const matches = !q || [d.vendor, d.agentName, d.agentPhone, d.trackingId, d.packageDescription, d.flatNumber]
+      .map(x => (x||'').toString().toLowerCase()).join(' ').includes(q)
+    const byStatus = status==='all' ? true : d.status === status
+    return matches && byStatus
+  })
+
+  const accept = async (id) => {
+    const res = await deliveryService.acceptDelivery(id, user.id)
+    if (res.success) {
+      setItems(prev => prev.map(x => x._id===id ? { ...x, status: 'accepted', updatedAt: new Date().toISOString() } : x))
+      showSuccess('Delivery accepted!')
+    } else {
+      showError('Failed to accept delivery', res.error || 'Try again')
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row gap-3">
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search vendor, agent, tracking..." className="flex-1 px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
+        <select value={status} onChange={e=>setStatus(e.target.value)} className="px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+          <option value="all">All Status</option>
+          <option value="delivered">Delivered</option>
+          <option value="accepted">Accepted</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+      {loading ? (
+        <div className="text-gray-600 dark:text-gray-400">Loading...</div>
+      ) : filtered.length===0 ? (
+        <div className="text-gray-600 dark:text-gray-400">No deliveries found.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full table-auto">
+            <thead>
+              <tr className="border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left py-2 px-3">Vendor</th>
+                <th className="text-left py-2 px-3">Package</th>
+                <th className="text-left py-2 px-3">Agent</th>
+                <th className="text-left py-2 px-3">Time</th>
+                <th className="text-left py-2 px-3">Status</th>
+                <th className="text-left py-2 px-3">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(d => (
+                <tr key={d._id} className="border-b border-gray-100 dark:border-gray-700">
+                  <td className="py-2 px-3 font-medium text-gray-900 dark:text-white">{d.vendor}</td>
+                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">{d.packageDescription || '-'}<div className="text-xs text-gray-500">{d.trackingId}</div></td>
+                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">{d.agentName} <span className="text-xs text-gray-500">{d.agentPhone}</span></td>
+                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">{new Date(d.deliveryTime).toLocaleString()}</td>
+                  <td className="py-2 px-3">
+                    <span className={`px-2 py-1 rounded text-xs ${d.status==='accepted' ? 'bg-green-100 text-green-800' : d.status==='failed' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>{d.status}</span>
+                  </td>
+                  <td className="py-2 px-3">
+                    <button disabled={d.status!=='delivered'} onClick={()=>accept(d._id)} className={`px-3 py-1 rounded-lg text-white text-sm ${d.status==='delivered' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed'}`}>Accept</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
 
 const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [activeTab, setActiveTab] = useState('dashboard')
@@ -20,6 +115,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [saving, setSaving] = useState(false)
   const [needsProfile, setNeedsProfile] = useState(true)
   const [hasSaved, setHasSaved] = useState(false)
+  const [residentData, setResidentData] = useState(null)
+  const [verificationChecked, setVerificationChecked] = useState(false)
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -33,6 +130,12 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [complaintSubmitting, setComplaintSubmitting] = useState(false)
   const [myComplaints, setMyComplaints] = useState([])
   const [passForm, setPassForm] = useState({ visitorName: '', visitorPhone: '', visitorEmail: '', validHours: 6 })
+  // Service Requests (resident) - light client-side persistence
+  const [srForm, setSrForm] = useState({ category: 'Maintenance', priority: 'medium', description: '' })
+  const [srSubmitting, setSrSubmitting] = useState(false)
+  const [myServiceRequests, setMyServiceRequests] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('service_requests_resident')||'[]') } catch { return [] }
+  })
   const [creatingPass, setCreatingPass] = useState(false)
   const [myPasses, setMyPasses] = useState([])
   // Chat state
@@ -47,6 +150,16 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [unreadByRoom, setUnreadByRoom] = useState(()=>{
     try { return JSON.parse(localStorage.getItem('chat_unread_map')||'{}') } catch { return {} }
   })
+  const [fileUploading, setFileUploading] = useState(false)
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [adminUsers, setAdminUsers] = useState([])
+  const [assignedLocation, setAssignedLocation] = useState({ building: '', flatNumber: '' })
+
+  const getResolvedLocation = () => {
+    const b = (assignedLocation.building || form.building || profile?.building || user.building || '').trim()
+    const f = (assignedLocation.flatNumber || form.flatNumber || profile?.flatNumber || user.flatNumber || '').trim()
+    return { building: b, flatNumber: f }
+  }
 
   // Avatar helpers
   const hashToPalette = (id) => {
@@ -65,8 +178,10 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   }
 
   const getDisplayForUserId = (uid) => {
-    const r = (residentsList || []).find(x => x.authUserId === uid)
-    const name = r?.name || r?.email || uid || 'Resident'
+    const resident = (residentsList || []).find(x => x.authUserId === uid)
+    const admin = (adminUsers || []).find(a => a.authUserId === uid)
+    const user = resident || admin
+    const name = user?.name || user?.email || uid || (admin ? 'Admin' : 'Resident')
     const initials = (name || 'R').slice(0,2).toUpperCase()
     const bg = hashToPalette(uid || name)
     return { name, initials, bg }
@@ -97,6 +212,21 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [notifications, setNotifications] = useState([])
   const [notificationsLoading, setNotificationsLoading] = useState(false)
 
+  // Community Updates State
+  const [communityUpdates, setCommunityUpdates] = useState([])
+  const [updatesLoading, setUpdatesLoading] = useState(false)
+  const [updateFilters, setUpdateFilters] = useState({
+    type: 'all', // all, festival, event, announcement, maintenance
+    priority: 'all' // all, urgent, high, normal, low
+  })
+  const [selectedAnnouncement, setSelectedAnnouncement] = useState(null)
+  const [showAnnouncementDetail, setShowAnnouncementDetail] = useState(false)
+
+  // Flat and Building Selection State
+  const [buildings, setBuildings] = useState([])
+  const [availableFlats, setAvailableFlats] = useState([])
+  const [flatsLoading, setFlatsLoading] = useState(false)
+
   const isProfileComplete = useMemo(() => {
     const required = ['email', 'phone', 'ownerName', 'flatNumber']
     return required.every((k) => (form[k] || '').trim().length > 0)
@@ -113,56 +243,173 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       try {
         const authUserId = user?.id
         if (!authUserId) return
-        const { resident } = await residentService.getProfile(authUserId)
-        const base = {
-          name: user.name || '',
-          email: user.email || '',
-          phone: user.phone || '',
-          ownerName: '',
-          flatNumber: user.flatNumber || '',
-          building: user.building || ''
-        }
-        if (resident) {
-          setProfile(resident)
-          setForm({
-            name: resident.name || base.name,
-            email: resident.email || base.email,
-            phone: resident.phone || base.phone,
-            ownerName: resident.ownerName || base.ownerName,
-            flatNumber: resident.flatNumber || base.flatNumber,
-            building: resident.building || base.building
-          })
-          setNeedsProfile(!hasRequiredFields(resident))
-        } else {
-          setForm(base)
-          setNeedsProfile(!hasRequiredFields(base))
+        
+        // Check if resident is verified
+        const residentResult = await residentService.getResidentByUserId(authUserId)
+          if (residentResult.success && residentResult.data) {
+          setResidentData(residentResult.data)
+          if (residentResult.data.verified) {
+            // Load profile for verified residents
+            const { resident } = await residentService.getProfile(authUserId)
+            const base = {
+              name: residentResult.data?.name || user.name || '',
+              email: residentResult.data?.email || user.email || '',
+              phone: user.phone || '',
+              ownerName: '',
+              flatNumber: residentResult.data?.flatNumber || user.flatNumber || '',
+              building: residentResult.data?.building || user.building || ''
+            }
+            if (resident) {
+              setProfile(resident)
+              setForm({
+                name: resident.name || base.name,
+                email: resident.email || base.email,
+                phone: resident.phone || base.phone,
+                ownerName: resident.ownerName || base.ownerName,
+                flatNumber: resident.flatNumber || base.flatNumber,
+                building: resident.building || base.building
+              })
+              setNeedsProfile(!hasRequiredFields(resident))
+            } else {
+              setForm(base)
+              setNeedsProfile(!hasRequiredFields(base))
+            }
+          }
         }
       } catch (e) {
         console.error(e)
       } finally {
         setProfileLoading(false)
+        setVerificationChecked(true)
       }
     }
     load()
   }, [user])
+
+  // Load admin-assigned location for current user
+  useEffect(() => {
+    const fetchAssigned = async () => {
+      try {
+        const res = await mongoService.getAdminResidentEntries?.()
+        if (res?.success) {
+          const match = (res.data || []).find(r => (r.email || '').toLowerCase() === (user?.email || '').toLowerCase())
+          if (match) setAssignedLocation({ building: match.building || '', flatNumber: match.flatNumber || '' })
+        }
+      } catch {}
+    }
+    if (user?.email) fetchAssigned()
+  }, [user?.email])
+
+  // Load buildings when component mounts
+  useEffect(() => {
+    const loadBuildings = async () => {
+      try {
+        setFlatsLoading(true)
+        const localBuildings = [
+          { id: 'A', name: 'Building A', floors: 4, flatsPerFloor: 6, description: 'Premium building with gym and pool' },
+          { id: 'B', name: 'Building B', floors: 3, flatsPerFloor: 4, description: 'Standard building with garden' },
+          { id: 'C', name: 'Building C', floors: 5, flatsPerFloor: 8, description: 'Luxury building with all amenities' }
+        ]
+        setBuildings(localBuildings)
+        const allFlats = []
+        for (const b of localBuildings) {
+          allFlats.push(...generateFlats(b.id))
+        }
+        setAvailableFlats(allFlats)
+      } catch (e) {
+        console.error('Error loading buildings:', e)
+      } finally {
+        setFlatsLoading(false)
+      }
+    }
+    const generateFlats = (buildingId) => {
+      const configMap = {
+        A: { floors: 4, flatsPerFloor: 6 },
+        B: { floors: 3, flatsPerFloor: 4 },
+        C: { floors: 5, flatsPerFloor: 8 }
+      }
+      const config = configMap[buildingId] || { floors: 3, flatsPerFloor: 4 }
+      const list = []
+      for (let floor = 1; floor <= config.floors; floor++) {
+        for (let flat = 1; flat <= config.flatsPerFloor; flat++) {
+          const flatNumber = `${floor}${String(flat).padStart(2, '0')}`
+          list.push({ building: buildingId, flatNumber, floor })
+        }
+      }
+      return list
+    }
+    loadBuildings()
+  }, [])
+
+  const handleBuildingChange = async (buildingId) => {
+    try {
+      setFlatsLoading(true)
+      const all = availableFlats.filter(f => f.building === buildingId)
+      const rest = availableFlats.filter(f => f.building !== buildingId)
+      // ensure we regenerate quickly if needed
+      let current = all
+      if (current.length === 0 && buildingId) {
+        const regen = []
+        const configMap = { A: { floors: 4, flatsPerFloor: 6 }, B: { floors: 3, flatsPerFloor: 4 }, C: { floors: 5, flatsPerFloor: 8 } }
+        const cfg = configMap[buildingId] || { floors: 3, flatsPerFloor: 4 }
+        for (let floor = 1; floor <= cfg.floors; floor++) {
+          for (let flat = 1; flat <= cfg.flatsPerFloor; flat++) {
+            const fn = `${floor}${String(flat).padStart(2, '0')}`
+            regen.push({ building: buildingId, flatNumber: fn, floor })
+          }
+        }
+        current = regen
+        setAvailableFlats([...rest, ...regen])
+      }
+    } catch (e) {
+      console.error('Error loading flats for building:', e)
+    } finally {
+      setFlatsLoading(false)
+    }
+  }
 
   // Sync sidebar route to local tabs
   useEffect(() => {
     if (!currentPage) return
     const map = {
       dashboard: 'dashboard',
+      'service-requests': 'service-requests',
+      'service_requests': 'service-requests',
       payments: 'payments',
       maintenance: 'payments', // Map maintenance to payments (bill management)
       complaints: 'complaints',
       visitors: 'visitors',
+      deliveries: 'deliveries',
+      map: 'map',
       announcements: 'announcements',
       notifications: 'notifications',
       profile: 'profile',
       chat: 'chat'
     }
     const next = map[currentPage] || 'dashboard'
+    try { console.log('ResidentDashboard route map:', { currentPage, next }) } catch {}
     setActiveTab(next)
   }, [currentPage])
+
+  // Load my service requests when switching to service-requests tab
+  useEffect(() => {
+    const fetchMyServiceRequests = async () => {
+      if (activeTab !== 'service-requests' || !user?.id) return
+      try {
+        // Try Mongo first
+        const result = await mongoService.listServiceRequests({ residentAuthUserId: user.id, limit: 100 })
+        if (result.success) {
+          setMyServiceRequests(result.data || [])
+          try { localStorage.setItem('service_requests_resident', JSON.stringify(result.data || [])) } catch {}
+        } else {
+          // fallback: keep local
+        }
+      } catch (e) {
+        console.error('Error loading my service requests:', e)
+      }
+    }
+    fetchMyServiceRequests()
+  }, [activeTab, user])
 
   // Load bills when payments tab is active
   useEffect(() => {
@@ -217,17 +464,64 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       if (activeTab !== 'chat' || !user?.id) return
       try {
         setChatLoading(true)
-        // Load all residents and ensure a common group includes them
+        // Load all residents and admin users to create unified group
         try {
           const { residents } = await residentService.listResidents()
           setResidentsList(residents || [])
-          const allIds = (residents || []).map(r => r.authUserId).filter(Boolean)
-          if (allIds.length > 0) {
-            await chatService.createOrGetGroupRoom('Residents Group', allIds)
+          const residentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+          console.log('Resident chat: Found residents:', residentIds)
+          console.log('Resident chat: Current user ID:', user.id)
+          
+          // Create unified community group with all residents (including current user)
+          // Admin will add themselves when they load their dashboard
+          const allIds = [...residentIds]
+          // Ensure current user is included in the group
+          if (!allIds.includes(user.id)) {
+            allIds.push(user.id)
           }
-        } catch (_) {}
+          console.log('Resident chat: Creating community group with IDs:', allIds)
+          // Always create group, even with just current user
+          if (allIds.length > 0) {
+            const groupResult = await chatService.createOrGetGroupRoom('Community Group', allIds)
+            console.log('Resident chat: Group creation result:', groupResult)
+          } else {
+            // Fallback: create group with just current user
+            console.log('Resident chat: No residents found, creating group with current user only')
+            const groupResult = await chatService.createOrGetGroupRoom('Community Group', [user.id])
+            console.log('Resident chat: Fallback group creation result:', groupResult)
+          }
+          
+          // Wait a moment for group creation to complete, then load rooms
+          await new Promise(resolve => setTimeout(resolve, 100))
+        } catch (e) {
+          console.error('Error creating community group:', e)
+        }
+        
+        // Load rooms after group creation
         const { rooms } = await chatService.listRooms(user.id)
         const rs = rooms || []
+        console.log('Resident chat: Loaded rooms:', rs)
+        console.log('Resident chat: Room types:', rs.map(r => ({ id: r._id, type: r.type, name: r.name, members: r.memberAuthUserIds?.length })))
+        
+        // Extract admin users from group rooms
+        const groupRoom = rs.find(r => r.type === 'group' && r.name === 'Community Group')
+        console.log('Resident chat: Looking for group room:', groupRoom)
+        console.log('Resident chat: All group rooms:', rs.filter(r => r.type === 'group'))
+        if (groupRoom && groupRoom.memberAuthUserIds) {
+          const residentIds = (residentsList || []).map(r => r.authUserId).filter(Boolean)
+          const adminIds = groupRoom.memberAuthUserIds.filter(id => !residentIds.includes(id) && id !== user.id)
+          console.log('Resident chat: Found admin IDs in group:', adminIds)
+          
+          // Create admin user objects for display
+          const admins = adminIds.map(adminId => ({
+            authUserId: adminId,
+            name: `Admin ${adminId.slice(-4)}`, // Show last 4 chars of ID
+            email: `admin@community.com`,
+            role: 'admin',
+            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${adminId}`
+          }))
+          setAdminUsers(admins)
+        }
         // compute simple unread: lastMessageAt newer than lastSeen timestamp
         const nextUnread = { ...unreadByRoom }
         rs.forEach(r => {
@@ -239,10 +533,11 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
         setUnreadByRoom(nextUnread)
         localStorage.setItem('chat_unread_map', JSON.stringify(nextUnread))
         setChatRooms(rs)
-        if (!selectedRoomId && (rooms || []).length > 0) {
-          // Prefer group first
-          const group = rooms.find(r=>r.type==='group')
-          setSelectedRoomId((group || rooms[0])._id)
+        if (!selectedRoomId && (rs || []).length > 0) {
+          // Prefer Community Group first, then any other group, then first room
+          const communityGroup = rs.find(r=>r.type==='group' && r.name === 'Community Group')
+          const anyGroup = rs.find(r=>r.type==='group')
+          setSelectedRoomId((communityGroup || anyGroup || rs[0])._id)
         }
       } catch (e) {
         console.error(e)
@@ -258,7 +553,9 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       if (activeTab !== 'chat' || !selectedRoomId) return
       try {
         setMessagesLoading(true)
+        console.log('Resident chat: Loading messages for room:', selectedRoomId)
         const { messages } = await chatService.listMessages(selectedRoomId, undefined, 30)
+        console.log('Resident chat: Loaded messages:', messages)
         setMessages(messages || [])
         setHasMoreMsgs((messages || []).length === 30)
       } catch (e) {
@@ -268,6 +565,26 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     }
     loadMessages()
   }, [activeTab, selectedRoomId])
+
+  // Periodically check if Community Group exists
+  useEffect(() => {
+    if (activeTab === 'chat' && user?.id) {
+      const checkCommunityGroup = async () => {
+        const communityGroup = (chatRooms || []).find(r => r.type === 'group' && r.name === 'Community Group')
+        if (!communityGroup) {
+          console.log('Community Group not found, ensuring it exists...')
+          await ensureCommunityGroup()
+          // Reload rooms after ensuring group exists
+          const { rooms } = await chatService.listRooms(user.id)
+          setChatRooms(rooms || [])
+        }
+      }
+
+      // Check every 5 seconds if Community Group is missing
+      const interval = setInterval(checkCommunityGroup, 5000)
+      return () => clearInterval(interval)
+    }
+  }, [activeTab, user?.id, chatRooms])
 
   const loadMoreMessages = async () => {
     if (!hasMoreMsgs || messagesLoading || messages.length === 0) return
@@ -280,21 +597,24 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     } catch (e) { console.error(e) } finally { setMessagesLoading(false) }
   }
 
-  const openNewChat = async () => {
+  // Ensure Community Group exists
+  const ensureCommunityGroup = async () => {
     try {
-      // Load residents list
-      const res = await residentService.getResidents?.() || await residentService.listResidents?.()
-      const residents = res?.residents || []
-      const others = residents.filter(r=>r.authUserId && r.authUserId!==user.id)
-      const picked = window.prompt('Start chat with (enter authUserId):\n' + others.map(r=>`${r.name || r.email || r.authUserId} | ${r.authUserId}`).join('\n'))
-      const targetId = (picked || '').trim()
-      if (!targetId) return
-      const { room } = await chatService.createOrGetDmRoom([user.id, targetId])
-      setSelectedRoomId(room._id)
-      const { rooms } = await chatService.listRooms(user.id)
-      setChatRooms(rooms || [])
-    } catch (e) { console.error(e); showError('Failed to start chat', 'Please try again later.') }
+      const { residents } = await residentService.listResidents()
+      const residentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+      const allIds = [...residentIds]
+      if (!allIds.includes(user.id)) {
+        allIds.push(user.id)
+      }
+      console.log('Ensuring Community Group exists with IDs:', allIds)
+      await chatService.createOrGetGroupRoom('Community Group', allIds)
+      return true
+    } catch (e) {
+      console.error('Error ensuring Community Group:', e)
+      return false
+    }
   }
+
 
   const sendTextMessage = async () => {
     if (!composer.trim() || !selectedRoomId) return
@@ -316,6 +636,72 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       const { rooms } = await chatService.listRooms(user.id)
       setChatRooms(rooms || [])
     } catch (e) { console.error(e); showError('Failed to send message', 'Please check your connection and try again.') }
+  }
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    if (!chatFileService.isSupportedFileType(file.type)) {
+      showError('Unsupported file type', 'Please select an image, video, PDF, or document file.')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) { // 10MB limit
+      showError('File too large', 'Please select a file smaller than 10MB.')
+      return
+    }
+
+    setSelectedFile(file)
+  }
+
+  const sendFileMessage = async () => {
+    if (!selectedFile || !selectedRoomId) return
+    
+    try {
+      setFileUploading(true)
+      const room = (chatRooms || []).find(r => r._id === selectedRoomId)
+      if (!room) return
+
+      // Upload file
+      const uploadResult = await chatFileService.uploadChatFile(selectedFile)
+      if (!uploadResult.success) {
+        showError('Upload failed', uploadResult.error)
+        return
+      }
+
+      // Send file message
+      await chatService.sendFileMessage(
+        selectedRoomId,
+        user.id,
+        user.name || user.email || 'Resident',
+        uploadResult.data,
+        composer.trim() || ''
+      )
+
+      // Clear file and composer
+      setSelectedFile(null)
+      setComposer('')
+      
+      // Refresh messages
+      const { messages } = await chatService.listMessages(selectedRoomId, undefined, 30)
+      setMessages(messages || [])
+      
+      // Update room list
+      const { rooms } = await chatService.listRooms(user.id)
+      setChatRooms(rooms || [])
+      
+      showSuccess('File sent successfully!')
+    } catch (e) {
+      console.error('Error sending file:', e)
+      showError('Failed to send file', 'Please try again.')
+    } finally {
+      setFileUploading(false)
+    }
+  }
+
+  const removeSelectedFile = () => {
+    setSelectedFile(null)
   }
 
   const markRoomSeen = (roomId) => {
@@ -344,31 +730,120 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     fetchMyPasses()
   }, [activeTab, user])
 
-  // Load notifications when notifications tab is active
+  // Load notifications function (can be called from anywhere)
+  const loadNotifications = async () => {
+    if (!user?.id) return
+    try {
+      setNotificationsLoading(true)
+      
+      // Load regular notifications
+      const result = await notificationService.getUserNotifications(user.id, { limit: 50, role: 'resident' })
+      let regularNotifications = []
+      if (result.success) {
+        regularNotifications = result.data?.notifications || []
+      }
+      
+      // Load delivery notifications
+      // Extract building and flat from user profile or use defaults
+              const loc1 = getResolvedLocation()
+              const b1 = loc1.building || 'A'
+              const f1 = loc1.flatNumber || '101'
+              console.log('🔍 Loading delivery notifications for:', b1, f1)
+              const delNotifs1 = deliveryService.getResidentNotifications(b1, f1)
+      console.log('📦 Delivery notifications found:', deliveryNotifications)
+      
+      // Combine and sort notifications by date
+      const allNotifications = [...regularNotifications, ...deliveryNotifications]
+      allNotifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      
+      setNotifications(allNotifications)
+    } catch (e) {
+      console.error('Error loading notifications:', e)
+      setNotifications([])
+    } finally {
+      setNotificationsLoading(false)
+    }
+  }
+
+  // Load notifications when notifications tab is active or on dashboard
   useEffect(() => {
-    const fetchNotifications = async () => {
-      if (activeTab !== 'notifications' || !user?.id) return
-      try {
-        setNotificationsLoading(true)
-        const result = await notificationService.getUserNotifications(user.id, { limit: 50, role: 'resident' })
-        if (result.success) {
-          setNotifications(result.data?.notifications || [])
-        }
-      } catch (e) {
-        console.error('Error loading notifications:', e)
-        setNotifications([])
-      } finally {
-        setNotificationsLoading(false)
+    if (activeTab === 'notifications' || activeTab === 'dashboard') {
+      loadNotifications()
+    }
+  }, [activeTab, user, profile, form])
+
+  // Auto-refresh notifications every 30 seconds when on notifications tab or dashboard
+  useEffect(() => {
+    if (activeTab !== 'notifications' && activeTab !== 'dashboard') return
+
+    const interval = setInterval(() => {
+      console.log('🔄 Auto-refreshing notifications...')
+      loadNotifications()
+    }, 30000) // 30 seconds
+
+    return () => clearInterval(interval)
+  }, [activeTab, user, profile, form])
+
+  // Listen for storage changes (when new notifications are added)
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key && e.key.startsWith('resident_notifications_')) {
+        console.log('📢 Storage change detected, refreshing notifications...')
+        loadNotifications()
       }
     }
-    fetchNotifications()
-  }, [activeTab, user])
+
+    window.addEventListener('storage', handleStorageChange)
+    
+    // Also listen for custom events for same-tab updates
+    const handleNotificationUpdate = (event) => {
+      console.log('📢 Custom notification event received:', event.detail)
+      console.log('📢 Refreshing notifications...')
+      loadNotifications()
+    }
+    
+    window.addEventListener('deliveryNotificationCreated', handleNotificationUpdate)
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('deliveryNotificationCreated', handleNotificationUpdate)
+    }
+  }, [user, profile, form])
+
+  // Load community updates when announcements tab is active
+  useEffect(() => {
+    const fetchCommunityUpdates = async () => {
+      if (activeTab !== 'announcements' || !user?.id) return
+      try {
+        setUpdatesLoading(true)
+        const result = await announcementService.getAnnouncements({ 
+          limit: 50,
+          type: updateFilters.type !== 'all' ? updateFilters.type : undefined,
+          priority: updateFilters.priority !== 'all' ? updateFilters.priority : undefined
+        }, user.role)
+        
+        if (result.success) {
+          setCommunityUpdates(result.data || [])
+        } else {
+          console.error('Error loading announcements:', result.error)
+          setCommunityUpdates([])
+        }
+      } catch (e) {
+        console.error('Error loading community updates:', e)
+        setCommunityUpdates([])
+      } finally {
+        setUpdatesLoading(false)
+      }
+    }
+    fetchCommunityUpdates()
+  }, [activeTab, user, updateFilters.type, updateFilters.priority])
 
   const createPass = async () => {
     if (!user?.id) return
     try {
       setCreatingPass(true)
       if (!passForm.visitorName.trim() || !passForm.visitorPhone.trim()) return
+      const { building, flatNumber } = getResolvedLocation()
       const payload = {
         visitorName: passForm.visitorName,
         visitorPhone: passForm.visitorPhone,
@@ -376,10 +851,13 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
         hostAuthUserId: user.id,
         hostName: user.name || '',
         hostPhone: form.phone || user.phone || '',
-        building: form.building || user.building || '',
-        flatNumber: form.flatNumber || user.flatNumber || '',
+        building: building || '',
+        flatNumber: flatNumber || '',
+        // validUntil computed below
         validUntil: new Date(Date.now() + Number(passForm.validHours || 6) * 60 * 60 * 1000).toISOString()
       }
+      // Optional: include a local directions hint in UI after creation; server also computes
+      payload.directions = undefined
       await passService.createPass(payload)
       setPassForm({ visitorName: '', visitorPhone: '', visitorEmail: '', validHours: 6 })
       const { passes } = await passService.listPasses(user.id)
@@ -457,7 +935,17 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
 
   // Notification handling functions
   const handleNotificationClick = async (notification) => {
-    if (!notification.isRead) {
+    // Mark as read for delivery notifications
+    if (notification.type === 'delivery' && notification.status === 'unread') {
+      const building = profile?.building || form?.building || 'A'
+      const flatNumber = profile?.flatNumber || form?.flatNumber || '101'
+      deliveryService.markNotificationAsRead(notification._id, building, flatNumber)
+      setNotifications(prev => 
+        prev.map(n => n._id === notification._id ? { ...n, status: 'read', isRead: true } : n)
+      )
+    }
+    // Mark as read for regular notifications
+    else if (!notification.isRead) {
       try {
         await notificationService.markAsRead(notification._id)
         setNotifications(prev => 
@@ -483,14 +971,153 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     if (!user?.id) return
     
     try {
+      // Mark regular notifications as read
       await notificationService.markAllAsRead(user.id)
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
+      
+      // Mark delivery notifications as read
+      const loc2 = getResolvedLocation()
+      const b2 = loc2.building || 'A'
+      const f2 = loc2.flatNumber || '101'
+      const delNotifs2 = deliveryService.getResidentNotifications(b2, f2)
+      const loc3 = getResolvedLocation()
+      const b3 = loc3.building || 'A'
+      const f3 = loc3.flatNumber || '101'
+      const delNotifs3 = deliveryService.getResidentNotifications(b3, f3)
+      deliveryNotifications.forEach(notification => {
+        if (notification.status === 'unread') {
+          deliveryService.markNotificationAsRead(notification._id, building, flatNumber)
+        }
+      })
+      
+      setNotifications(prev => prev.map(n => ({ ...n, isRead: true, status: 'read' })))
       showSuccess('All Notifications Marked as Read', 'All notifications have been marked as read.')
     } catch (error) {
       console.error('Error marking all notifications as read:', error)
       showError('Error', 'Failed to mark all notifications as read.')
     }
   }
+
+  // Share pass functions
+  const sharePassViaWhatsApp = (pass) => {
+    const link = `http://localhost:5173/communitymap?flat=${encodeURIComponent(pass.building)}-${encodeURIComponent(pass.flatNumber)}&passCode=${encodeURIComponent(pass.code)}`
+    const message = `🏠 *Visitor Pass for ${pass.visitorName}*\n\n` +
+      `📱 *Code:* ${pass.code}\n` +
+      `👤 *Visitor:* ${pass.visitorName}\n` +
+      `📞 *Phone:* ${pass.visitorPhone}\n` +
+      `🏢 *Building:* ${pass.building}\n` +
+      `🚪 *Flat:* ${pass.flatNumber}\n` +
+      `⏰ *Valid Until:* ${new Date(pass.validUntil).toLocaleString()}\n` +
+      `🗺️ *Directions Link:* ${link}\n\n` +
+      `Please show this QR code at the security gate.`
+    
+    const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`
+    window.open(whatsappUrl, '_blank')
+  }
+
+  const sharePassViaEmail = async (pass) => {
+    const link = `http://localhost:5173/communitymap?flat=${encodeURIComponent(pass.building)}-${encodeURIComponent(pass.flatNumber)}&passCode=${encodeURIComponent(pass.code)}`
+    const subject = `Visitor Pass for ${pass.visitorName}`
+    const body = `Dear ${pass.visitorName},\n\n` +
+      `You have been granted a visitor pass for our community.\n\n` +
+      `**Pass Details:**\n` +
+      `• Code: ${pass.code}\n` +
+      `• Building: ${pass.building}\n` +
+      `• Flat: ${pass.flatNumber}\n` +
+      `• Valid Until: ${new Date(pass.validUntil).toLocaleString()}\n` +
+      `• Directions Link: ${link}\n\n` +
+      `Please show the QR code at the security gate for entry.\n\n` +
+      `Best regards,\n` +
+      `${user.name || 'Resident'}`
+
+    const mailtoUrl = `mailto:${pass.visitorEmail || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    window.open(mailtoUrl, '_blank')
+  }
+
+  const copyPassToClipboard = async (pass) => {
+    const link = `http://localhost:5173/communitymap?flat=${encodeURIComponent(pass.building)}-${encodeURIComponent(pass.flatNumber)}&passCode=${encodeURIComponent(pass.code)}`
+    const passText = `Visitor Pass Code: ${pass.code}\n` +
+      `Visitor: ${pass.visitorName}\n` +
+      `Building: ${pass.building}\n` +
+      `Flat: ${pass.flatNumber}\n` +
+      `Valid Until: ${new Date(pass.validUntil).toLocaleString()}\n` +
+      `Directions Link: ${link}`
+    
+    try {
+      await navigator.clipboard.writeText(passText)
+      showSuccess('Copied to Clipboard', 'Pass details have been copied to your clipboard.')
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error)
+      showError('Copy Failed', 'Unable to copy to clipboard. Please try again.')
+    }
+  }
+
+  // Community Updates Functions
+  const markUpdateAsRead = (updateId) => {
+    setCommunityUpdates(prev => 
+      prev.map(update => 
+        update._id === updateId ? { ...update, isRead: true } : update
+      )
+    )
+  }
+
+  const markAllUpdatesAsRead = () => {
+    setCommunityUpdates(prev => 
+      prev.map(update => ({ ...update, isRead: true }))
+    )
+    showSuccess('All Updates Marked as Read', 'All community updates have been marked as read.')
+  }
+
+
+  const shareUpdate = (update) => {
+    const message = `🏠 *${update.title}*\n\n` +
+      `📅 *Date:* ${new Date(update.date).toLocaleDateString()}\n` +
+      `📍 *Location:* ${update.location}\n` +
+      `👤 *Organizer:* ${update.organizer}\n\n` +
+      `${update.content}\n\n` +
+      `Shared from Community App`
+    
+    const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`
+    window.open(whatsappUrl, '_blank')
+  }
+
+  const handleAnnouncementClick = (update) => {
+    setSelectedAnnouncement(update)
+    setShowAnnouncementDetail(true)
+    markUpdateAsRead(update._id)
+  }
+
+  const closeAnnouncementDetail = () => {
+    setShowAnnouncementDetail(false)
+    setSelectedAnnouncement(null)
+  }
+
+  // Get flats for selected building
+  const getFlatsForBuilding = (buildingId) => {
+    if (!buildingId) return []
+    const flats = availableFlats
+      .filter(flat => flat.building === buildingId && flat.available)
+      .sort((a, b) => {
+        // Sort by floor first, then by flat number
+        if (a.floor !== b.floor) return a.floor - b.floor
+        return a.flatNumber.localeCompare(b.flatNumber, undefined, { numeric: true })
+      })
+    
+    // Debug logging
+    console.log(`Getting flats for building ${buildingId}:`, {
+      totalAvailableFlats: availableFlats.length,
+      buildingFlats: flats.length,
+      allFlats: availableFlats.filter(flat => flat.building === buildingId)
+    })
+    
+    return flats
+  }
+
+  // Filter community updates
+  const filteredUpdates = communityUpdates.filter(update => {
+    const matchesType = updateFilters.type === 'all' || update.type === updateFilters.type
+    const matchesPriority = updateFilters.priority === 'all' || update.priority === updateFilters.priority
+    return matchesType && matchesPriority
+  })
 
   const submitComplaint = async () => {
     if (!user?.id) return
@@ -529,10 +1156,13 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       if (!(user.name || '').trim()) nextErrors.name = 'Name is required'
       if (!form.ownerName.trim()) nextErrors.ownerName = 'Owner name is required'
       if (!form.flatNumber.trim()) nextErrors.flatNumber = 'Flat number is required'
+      else if (form.building && !getFlatsForBuilding(form.building).some(f => f.flatNumber === form.flatNumber)) {
+        nextErrors.flatNumber = 'Selected flat is not available'
+      }
       if (!form.phone.trim()) nextErrors.phone = 'Phone is required'
       else if (!/^\+?[0-9]{7,15}$/.test(form.phone.trim())) nextErrors.phone = 'Enter a valid phone number'
       if (!form.building.trim()) nextErrors.building = 'Select a building'
-      else if (!['A','B','C'].includes(form.building)) nextErrors.building = 'Invalid building'
+      else if (!buildings.some(b => b.id === form.building)) nextErrors.building = 'Invalid building'
 
       setErrors(nextErrors)
       if (Object.keys(nextErrors).length > 0) {
@@ -551,6 +1181,19 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       })
       setHasSaved(true)
       setNeedsProfile(false)
+      
+      // Update profile state with new data
+      setProfile({
+        ...profile,
+        phone: form.phone,
+        ownerName: form.ownerName,
+        flatNumber: form.flatNumber,
+        building: form.building
+      })
+      
+      // Show success message and switch back to profile view
+      showSuccess('Profile Updated', 'Your profile has been updated successfully.')
+      setActiveTab('profile')
     } catch (e) {
       console.error(e)
     } finally {
@@ -572,68 +1215,368 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
 
 
 
+  const handleVerificationSuccess = (resident) => {
+    setResidentData(resident)
+    setVerificationChecked(true)
+    try { setActiveTab('dashboard') } catch {}
+  }
+
   const renderContent = () => {
-    switch (activeTab) {
+    // Block access until verification status is known
+    if (!verificationChecked) {
+      return (
+        <div className="flex items-center justify-center h-64">
+          <div className="text-gray-600 dark:text-gray-400">Checking verification…</div>
+        </div>
+      )
+    }
+
+    // If not verified or no record yet, require verification (full page)
+    if (!residentData || !residentData.verified) {
+      return (
+        <div className="min-h-[70vh]">
+          <ResidentVerification user={user} onVerified={handleVerificationSuccess} />
+        </div>
+      )
+    }
+
+    const tabKey = String(activeTab || '').toLowerCase().replace(/_/g, '-').trim()
+    try { console.log('ResidentDashboard rendering tab:', tabKey) } catch {}
+    switch (tabKey) {
       case 'dashboard':
         return (
           <div className="space-y-6">
+            {/* Analytics Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-lg">
                 <CreditCard className="w-8 h-8 text-blue-600 mb-2" />
-                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹2,500</h3>
+                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalPending?.toLocaleString() || 0}</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-400">Pending Bills</p>
               </div>
               <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-lg">
                 <MessageSquare className="w-8 h-8 text-green-600 mb-2" />
-                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">2</h3>
+                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{myComplaints.filter(c => c.status !== 'resolved').length}</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-400">Open Complaints</p>
               </div>
               <div className="bg-purple-50 dark:bg-purple-900/20 p-6 rounded-lg">
                 <QrCode className="w-8 h-8 text-purple-600 mb-2" />
-                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">5</h3>
+                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{myPasses.length}</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-400">Active Passes</p>
               </div>
               <div className="bg-orange-50 dark:bg-orange-900/20 p-6 rounded-lg">
                 <Bell className="w-8 h-8 text-orange-600 mb-2" />
-                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">3</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">New Announcements</p>
+                <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{notifications.filter(n => !n.isRead && n.status !== 'read').length}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Unread Notifications</p>
               </div>
             </div>
 
+            {/* Delivery Notifications Preview */}
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">📦 Recent Deliveries</h3>
+                <button
+                  onClick={() => setActiveTab('deliveries')}
+                  className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                >
+                  View All
+                </button>
+              </div>
+              
+              {notifications.filter(n => n.type === 'delivery').length === 0 ? (
+                <div className="text-center py-4">
+                  <p className="text-gray-500 dark:text-gray-400">No delivery notifications yet</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notifications.filter(n => n.type === 'delivery').slice(0, 3).map((notification) => (
+                    <div
+                      key={notification._id}
+                      className={`p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                        (!notification.isRead || notification.status === 'unread') 
+                          ? 'border-green-300 bg-green-50 dark:bg-green-900/20' 
+                          : 'border-gray-300 dark:border-gray-600'
+                      }`}
+                      onClick={() => setActiveTab('deliveries')}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <h4 className="font-medium text-gray-900 dark:text-white text-sm">
+                            {notification.title}
+                          </h4>
+                          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                            {notification.message}
+                          </p>
+                        </div>
+                        <span className="text-xs text-gray-500 dark:text-gray-500">
+                          {new Date(notification.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Recent Activity Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Recent Bills</h3>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center p-3 bg-gray-50 dark:bg-gray-700 rounded">
-                    <div>
-                      <p className="font-medium text-gray-900 dark:text-white">Maintenance</p>
-                      <p className="text-sm text-gray-600 dark:text-gray-400">Due: Dec 31, 2024</p>
-                    </div>
-                    <span className="text-red-600 font-semibold">₹2,000</span>
+                {bills.length === 0 ? (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">No bills yet.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {bills.slice(0, 3).map((bill) => {
+                      const assignment = bill.assignments?.find(a => a.residentId === user.id)
+                      if (!assignment) return null
+                      return (
+                        <div key={bill._id} className="flex justify-between items-center p-3 bg-gray-50 dark:bg-gray-700 rounded">
+                          <div>
+                            <p className="font-medium text-gray-900 dark:text-white">{bill.title}</p>
+                            <p className="text-sm text-gray-600 dark:text-gray-400">Due: {new Date(bill.dueDate).toLocaleDateString()}</p>
+                          </div>
+                          <span className={`font-semibold ${assignment.status === 'paid' ? 'text-green-600' : 'text-red-600'}`}>
+                            ₹{assignment.amount?.toLocaleString()}
+                          </span>
+                        </div>
+                      )
+                    })}
                   </div>
-                  <div className="flex justify-between items-center p-3 bg-gray-50 dark:bg-gray-700 rounded">
-                    <div>
-                      <p className="font-medium text-gray-900 dark:text-white">Electricity</p>
-                      <p className="text-sm text-gray-600 dark:text-gray-400">Due: Jan 5, 2025</p>
-                    </div>
-                    <span className="text-red-600 font-semibold">₹500</span>
-                  </div>
-                </div>
+                )}
               </div>
 
               <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Recent Announcements</h3>
-                <div className="space-y-3">
-                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded">
-                    <p className="font-medium text-blue-900 dark:text-blue-300">Water Supply Maintenance</p>
-                    <p className="text-sm text-blue-700 dark:text-blue-400">Tomorrow 10 AM - 2 PM</p>
+                {communityUpdates.length === 0 ? (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">No announcements yet.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {communityUpdates.slice(0, 3).map((update) => (
+                      <div key={update._id} className={`p-3 rounded cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                        update.type === 'festival' ? 'bg-orange-50 dark:bg-orange-900/20' :
+                        update.type === 'event' ? 'bg-blue-50 dark:bg-blue-900/20' :
+                        update.type === 'announcement' ? 'bg-green-50 dark:bg-green-900/20' :
+                        'bg-red-50 dark:bg-red-900/20'
+                      }`} onClick={() => setActiveTab('announcements')}>
+                        <div className="flex items-center justify-between">
+                          <p className={`font-medium text-sm ${
+                            update.type === 'festival' ? 'text-orange-900 dark:text-orange-300' :
+                            update.type === 'event' ? 'text-blue-900 dark:text-blue-300' :
+                            update.type === 'announcement' ? 'text-green-900 dark:text-green-300' :
+                            'text-red-900 dark:text-red-300'
+                          }`}>
+                            {update.title}
+                          </p>
+                          {!update.isRead && (
+                            <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                          {new Date(update.date).toLocaleDateString()}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                  <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded">
-                    <p className="font-medium text-green-900 dark:text-green-300">Community Event</p>
-                    <p className="text-sm text-green-700 dark:text-green-400">New Year Celebration - Dec 31</p>
-                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Service Requests Summary */}
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">My Service Requests</h3>
+                <button
+                  onClick={() => setActiveTab('service-requests')}
+                  className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                >
+                  Create New
+                </button>
+              </div>
+              {myServiceRequests.length === 0 ? (
+                <p className="text-sm text-gray-600 dark:text-gray-400">No service requests yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {myServiceRequests.slice(0, 5).map(r => (
+                    <div key={r._id || r.requestId} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded">
+                      <div>
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">{r.category}</p>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">{r.description?.slice(0, 50)}...</p>
+                      </div>
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        r.status==='created'?'bg-gray-100 text-gray-800': 
+                        r.status==='assigned'?'bg-amber-100 text-amber-800': 
+                        r.status==='in_progress'?'bg-blue-100 text-blue-800': 
+                        r.status==='completed'?'bg-purple-100 text-purple-800':
+                        'bg-green-100 text-green-800'
+                      }`}>
+                        {String(r.status||'').replace('_',' ')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      case 'service-requests':
+        return (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Create Service Request</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Category</label>
+                  <select className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={srForm.category} onChange={e=>setSrForm({...srForm, category: e.target.value})}>
+                    <option value="Maintenance">Maintenance</option>
+                    <option value="IT Support">IT Support</option>
+                    <option value="Housekeeping">Housekeeping</option>
+                    <option value="Administration">Administration</option>
+                    <option value="Reception">Reception</option>
+                    <option value="Accounts">Accounts</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Priority</label>
+                  <select className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={srForm.priority} onChange={e=>setSrForm({...srForm, priority: e.target.value})}>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Location</label>
+                  <input readOnly className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={`${form.building || profile?.building || 'A'}-${form.flatNumber || profile?.flatNumber || '101'}`} />
+                </div>
+                <div className="md:col-span-3">
+                  <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Description</label>
+                  <textarea rows={3} className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={srForm.description} onChange={e=>setSrForm({...srForm, description: e.target.value})} />
                 </div>
               </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={async () => {
+                    if (!srForm.description.trim()) return
+                    setSrSubmitting(true)
+                    const { building, flatNumber } = getResolvedLocation()
+                    const payload = {
+                      category: srForm.category,
+                      priority: srForm.priority,
+                      description: srForm.description.trim(),
+                      building: building || 'A',
+                      flatNumber: flatNumber || '101',
+                      residentAuthUserId: user.id,
+                      residentName: user.name || '',
+                      status: 'created',
+                      createdAt: new Date().toISOString()
+                    }
+                    try {
+                    const res = await mongoService.createServiceRequest(payload)
+                      if (res.success) {
+                        const created = res.data
+                        setMyServiceRequests(prev => [created, ...prev])
+                        try { localStorage.setItem('service_requests_resident', JSON.stringify([created, ...myServiceRequests])) } catch {}
+                        window.dispatchEvent(new CustomEvent('serviceRequestCreated', { detail: created }))
+                      // Notify only staff in the selected department
+                      try {
+                        const staffResult = await authService.getStaffUsers()
+                        if (staffResult?.success) {
+                          const department = srForm.category // matches Admin staffDepartment labels
+                          const targetUsers = (staffResult.users || [])
+                            .filter(u => (u.staffDepartment || '') === department)
+                            .map(u => u.id)
+                            .filter(Boolean)
+                          if (targetUsers.length > 0) {
+                            await notificationService.create({
+                              title: 'New Service Request',
+                              message: `${department}: ${payload.description} @ ${payload.building}-${payload.flatNumber}`,
+                              type: 'info',
+                              priority: (payload.priority || 'medium'),
+                              targetUsers,
+                              metadata: { actionUrl: '/tasks' }
+                            })
+                          }
+                        }
+                      } catch (notifyErr) { console.warn('Notify staff failed:', notifyErr) }
+                        showSuccess('Request submitted', 'Your service request has been created.')
+                      } else {
+                        // Fallback to local if API failed
+                        const localItem = { _id: 'SR-'+Date.now(), requestId: 'SR-'+Date.now(), ...payload }
+                        setMyServiceRequests(prev => [localItem, ...prev])
+                        try {
+                          const next = [localItem, ...myServiceRequests]
+                          localStorage.setItem('service_requests_resident', JSON.stringify(next))
+                          const existing = JSON.parse(localStorage.getItem('service_requests')||'[]')
+                          localStorage.setItem('service_requests', JSON.stringify([localItem, ...existing]))
+                          window.dispatchEvent(new CustomEvent('serviceRequestCreated', { detail: localItem }))
+                        } catch {}
+                        showError('Offline mode', 'Saved locally. Start Mongo server to sync.')
+                      }
+                    } catch (e) {
+                      console.error(e)
+                    } finally {
+                      setSrForm({ category: 'Maintenance', priority: 'medium', description: '' })
+                      setSrSubmitting(false)
+                    }
+                  }}
+                  disabled={srSubmitting || !srForm.description.trim()}
+                  className={`px-4 py-2 rounded-lg text-white ${srSubmitting ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                  {srSubmitting ? 'Submitting...' : 'Submit Request'}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">My Requests</h3>
+              {myServiceRequests.length === 0 ? (
+                <p className="text-sm text-gray-600 dark:text-gray-400">No requests yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b dark:border-gray-700">
+                        <th className="text-left py-2">ID</th>
+                        <th className="text-left py-2">Category</th>
+                        <th className="text-left py-2">Priority</th>
+                        <th className="text-left py-2">Status</th>
+                        <th className="text-left py-2">Created</th>
+                        <th className="text-left py-2">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {myServiceRequests.map(r => (
+                        <tr key={r._id} className="border-b dark:border-gray-700">
+                          <td className="py-2 text-gray-900 dark:text-white font-mono">{r.requestId}</td>
+                          <td className="py-2 capitalize">{r.category}</td>
+                          <td className="py-2 capitalize">
+                            <span className={`px-2 py-1 rounded text-xs ${r.priority==='urgent'?'bg-red-100 text-red-800': r.priority==='high'?'bg-orange-100 text-orange-800': r.priority==='medium'?'bg-blue-100 text-blue-800':'bg-gray-100 text-gray-800'}`}>{r.priority}</span>
+                          </td>
+                          <td className="py-2 capitalize">
+                            <span className={`px-2 py-1 rounded text-xs ${r.status==='created'?'bg-gray-100 text-gray-800': r.status==='assigned'?'bg-amber-100 text-amber-800': r.status==='in_progress'?'bg-blue-100 text-blue-800': r.status==='completed'?'bg-purple-100 text-purple-800':'bg-green-100 text-green-800'}`}>{r.status.replace('_',' ')}</span>
+                          </td>
+                          <td className="py-2">{new Date(r.createdAt).toLocaleString()}</td>
+                          <td className="py-2 text-gray-700 dark:text-gray-300 max-w-md truncate" title={r.description}>{r.description}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      case 'deliveries':
+        return (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">My Deliveries</h3>
+              {(() => { const { building, flatNumber } = getResolvedLocation(); return (
+                <ResidentDeliveries building={building} flatNumber={flatNumber} user={user} />
+              )})()}
             </div>
           </div>
         )
@@ -966,20 +1909,53 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                         src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(p.code)}`}
                       />
                     </div>
-                    <div className="mt-3 flex justify-end">
+                    <div className="mt-3 flex justify-between items-center">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => sharePassViaWhatsApp(p)}
+                          className="px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700 text-xs flex items-center gap-1"
+                          title="Share via WhatsApp"
+                        >
+                          <MessageSquare className="w-3 h-3" />
+                          WhatsApp
+                        </button>
+                        <button
+                          onClick={() => sharePassViaEmail(p)}
+                          className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs flex items-center gap-1"
+                          title="Share via Email"
+                        >
+                          <Mail className="w-3 h-3" />
+                          Email
+                        </button>
+                        <button
+                          onClick={() => copyPassToClipboard(p)}
+                          className="px-3 py-1 rounded bg-gray-600 text-white hover:bg-gray-700 text-xs flex items-center gap-1"
+                          title="Copy to Clipboard"
+                        >
+                          <Share2 className="w-3 h-3" />
+                          Copy
+                        </button>
+                      </div>
                       <button
-                        onClick={async () => {
-                          try {
-                            const result = await showConfirm('Cancel Pass', 'Are you sure you want to cancel this pass? This cannot be undone.')
-                            if (!result.isConfirmed) return
-                            await passService.updatePassStatus(p.code, 'expired')
-                            const { passes } = await passService.listPasses(user.id)
-                            setMyPasses((passes || []).filter(x => x.status === 'active'))
-                            showSuccess('Pass Cancelled', 'The visitor pass has been cancelled successfully.')
-                          } catch (e) {
-                            showError('Failed to Cancel Pass', 'Please try again later.')
-                          }
-                        }}
+                      onClick={async () => {
+                      try {
+                        const result = await showConfirm('Cancel Pass', 'Are you sure you want to cancel this pass? This cannot be undone.')
+                        if (!result.isConfirmed) return
+                        // Optimistic UI update
+                        setMyPasses(prev => prev.map(x => x._id === p._id ? { ...x, status: 'expired' } : x))
+                        // Prefer dedicated expire endpoint; fallback to status if needed
+                        try {
+                          await passService.expirePass(p.code)
+                        } catch {
+                          await passService.updatePassStatus(p.code, 'expired')
+                        }
+                        const { passes } = await passService.listPasses(user.id)
+                        setMyPasses((passes || []).filter(x => x.status === 'active'))
+                        showSuccess('Pass Cancelled', 'The visitor pass has been cancelled successfully.')
+                      } catch (e) {
+                        showError('Failed to Cancel Pass', 'Please try again later.')
+                      }
+                    }}
                         className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 text-xs"
                       >Cancel Pass</button>
                     </div>
@@ -992,25 +1968,308 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       case 'announcements':
         return (
           <div className="space-y-6">
+            {/* Header with filters */}
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Community Announcements</h3>
-              <div className="space-y-4">
-                <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                  <h4 className="font-medium text-blue-900 dark:text-blue-300 mb-2">Water Supply Maintenance</h4>
-                  <p className="text-sm text-blue-700 dark:text-blue-400 mb-2">
-                    Water supply will be interrupted tomorrow from 10 AM to 2 PM for maintenance work.
-                  </p>
-                  <p className="text-xs text-blue-600 dark:text-blue-500">Posted: Dec 22, 2024</p>
-                </div>
-                <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                  <h4 className="font-medium text-green-900 dark:text-green-300 mb-2">New Year Celebration</h4>
-                  <p className="text-sm text-green-700 dark:text-green-400 mb-2">
-                    Join us for the New Year celebration on Dec 31st at the community hall.
-                  </p>
-                  <p className="text-xs text-green-600 dark:text-green-500">Posted: Dec 20, 2024</p>
-                </div>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Community Updates & Announcements</h3>
+                {communityUpdates.some(u => !u.isRead) && (
+                  <button
+                    onClick={markAllUpdatesAsRead}
+                    className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                  >
+                    Mark all as read
+                  </button>
+                )}
+              </div>
+              
+              {/* Filters */}
+              <div className="flex gap-4 mb-4">
+                <select
+                  value={updateFilters.type}
+                  onChange={(e) => setUpdateFilters({...updateFilters, type: e.target.value})}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                >
+                  <option value="all">All Types</option>
+                  <option value="announcement">Announcements</option>
+                  <option value="event">Events</option>
+                  <option value="festival">Festivals</option>
+                  <option value="maintenance">Maintenance</option>
+                </select>
+                <select
+                  value={updateFilters.priority}
+                  onChange={(e) => setUpdateFilters({...updateFilters, priority: e.target.value})}
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                >
+                  <option value="all">All Priorities</option>
+                  <option value="urgent">Urgent</option>
+                  <option value="high">High</option>
+                  <option value="normal">Normal</option>
+                  <option value="low">Low</option>
+                </select>
               </div>
             </div>
+
+            {/* Updates List */}
+            <div className="space-y-4">
+              {updatesLoading ? (
+                <div className="text-center py-8">
+                  <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-gray-600 dark:text-gray-400">Loading community updates...</p>
+                </div>
+              ) : filteredUpdates.length === 0 ? (
+                <div className="text-center py-8">
+                  <Bell className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600 dark:text-gray-400">No updates found</p>
+                </div>
+              ) : (
+                filteredUpdates.map((update) => {
+                  const isUpcoming = new Date(update.date) > new Date()
+                  const isToday = new Date(update.date).toDateString() === new Date().toDateString()
+                  
+                  return (
+                    <div
+                      key={update._id}
+                      onClick={() => handleAnnouncementClick(update)}
+                      className={`bg-white dark:bg-gray-800 rounded-lg shadow hover:shadow-md transition-shadow cursor-pointer ${
+                        !update.isRead ? 'ring-2 ring-blue-200 dark:ring-blue-800' : ''
+                      }`}
+                    >
+                      <div className="flex">
+                        {/* Left side - Details */}
+                        <div className="flex-1 p-6">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <h4 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                {update.title}
+                              </h4>
+                              {!update.isRead && (
+                                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                              )}
+                            </div>
+                            
+                            <div className="flex items-center gap-3 mb-3">
+                              <span className={`px-2 py-1 text-xs rounded ${
+                                update.type === 'festival' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200' :
+                                update.type === 'event' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                                update.type === 'announcement' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' :
+                                'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
+                              }`}>
+                                {update.type}
+                              </span>
+                              <span className={`px-2 py-1 text-xs rounded ${
+                                update.priority === 'urgent' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
+                                update.priority === 'high' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200' :
+                                update.priority === 'normal' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                                'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                              }`}>
+                                {update.priority}
+                              </span>
+                              {isToday && (
+                                <span className="px-2 py-1 text-xs rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                                  Today
+                                </span>
+                              )}
+                              {isUpcoming && !isToday && (
+                                <span className="px-2 py-1 text-xs rounded bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200">
+                                  Upcoming
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              shareUpdate(update)
+                            }}
+                            className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                            title="Share via WhatsApp"
+                          >
+                            <Share2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                        
+                        <p className="text-gray-600 dark:text-gray-400 mb-4 leading-relaxed">
+                          {update.content}
+                        </p>
+                        
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                            <div className="flex items-center gap-2">
+                              <Calendar className="w-4 h-4 text-gray-400" />
+                              <span className="text-gray-600 dark:text-gray-400">
+                                {new Date(update.date).toLocaleDateString('en-US', {
+                                  weekday: 'long',
+                                  year: 'numeric',
+                                  month: 'long',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <MapPin className="w-4 h-4 text-gray-400" />
+                              <span className="text-gray-600 dark:text-gray-400">{update.location}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <User className="w-4 h-4 text-gray-400" />
+                              <span className="text-gray-600 dark:text-gray-400">{update.organizer}</span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Right side - Image */}
+                        {update.image && (
+                          <div className="w-48 h-48 flex-shrink-0 p-4">
+                            <img
+                              src={update.image}
+                              alt={update.title}
+                              className="w-full h-full object-cover rounded-lg shadow-sm"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+
+            {/* Announcement Detail Modal */}
+            {showAnnouncementDetail && selectedAnnouncement && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+                  <div className="flex">
+                    {/* Left side - Full details */}
+                    <div className="flex-1 p-8">
+                      <div className="flex items-start justify-between mb-6">
+                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+                          {selectedAnnouncement.title}
+                        </h2>
+                        <button
+                          onClick={closeAnnouncementDetail}
+                          className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        >
+                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-3 mb-6">
+                        <span className={`px-3 py-1 text-sm rounded ${
+                          selectedAnnouncement.type === 'festival' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200' :
+                          selectedAnnouncement.type === 'event' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                          selectedAnnouncement.type === 'announcement' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' :
+                          'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
+                        }`}>
+                          {selectedAnnouncement.type}
+                        </span>
+                        <span className={`px-3 py-1 text-sm rounded ${
+                          selectedAnnouncement.priority === 'urgent' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
+                          selectedAnnouncement.priority === 'high' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200' :
+                          selectedAnnouncement.priority === 'normal' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                          'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                        }`}>
+                          {selectedAnnouncement.priority}
+                        </span>
+                        {new Date(selectedAnnouncement.date).toDateString() === new Date().toDateString() && (
+                          <span className="px-3 py-1 text-sm rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
+                            Today
+                          </span>
+                        )}
+                        {new Date(selectedAnnouncement.date) > new Date() && (
+                          <span className="px-3 py-1 text-sm rounded bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200">
+                            Upcoming
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="prose dark:prose-invert max-w-none mb-8">
+                        <p className="text-gray-700 dark:text-gray-300 leading-relaxed text-lg">
+                          {selectedAnnouncement.content}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                        <div className="flex items-center gap-3">
+                          <Calendar className="w-5 h-5 text-gray-400" />
+                          <div>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Date & Time</p>
+                            <p className="text-gray-900 dark:text-white font-medium">
+                              {new Date(selectedAnnouncement.date).toLocaleDateString('en-US', {
+                                weekday: 'long',
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </p>
+                          </div>
+                        </div>
+
+                        {selectedAnnouncement.location && (
+                          <div className="flex items-center gap-3">
+                            <MapPin className="w-5 h-5 text-gray-400" />
+                            <div>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">Location</p>
+                              <p className="text-gray-900 dark:text-white font-medium">{selectedAnnouncement.location}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        {selectedAnnouncement.organizer && (
+                          <div className="flex items-center gap-3">
+                            <User className="w-5 h-5 text-gray-400" />
+                            <div>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">Organizer</p>
+                              <p className="text-gray-900 dark:text-white font-medium">{selectedAnnouncement.organizer}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-3">
+                          <User className="w-5 h-5 text-gray-400" />
+                          <div>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Posted by</p>
+                            <p className="text-gray-900 dark:text-white font-medium">{selectedAnnouncement.adminName || 'Admin'}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-4">
+                        <button
+                          onClick={() => shareUpdate(selectedAnnouncement)}
+                          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                        >
+                          <Share2 className="w-4 h-4" />
+                          Share
+                        </button>
+                        <button
+                          onClick={closeAnnouncementDetail}
+                          className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          Close
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Right side - Large image */}
+                    {selectedAnnouncement.image && (
+                      <div className="w-96 flex-shrink-0 p-8">
+                        <img
+                          src={selectedAnnouncement.image}
+                          alt={selectedAnnouncement.title}
+                          className="w-full h-full object-cover rounded-lg shadow-lg"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )
       case 'chat':
@@ -1019,23 +2278,66 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Chat</h3>
-                <button onClick={openNewChat} className="px-3 py-2 rounded-lg bg-blue-600 text-white">New Chat</button>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Residents / Rooms */}
                 <div className="lg:col-span-1 border dark:border-gray-700 rounded-lg overflow-hidden">
                   <div className="p-3 border-b dark:border-gray-700 flex items-center justify-between">
-                    <span className="font-medium text-gray-900 dark:text-white">Residents</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-900 dark:text-white">Community Members</span>
                     {chatLoading && <span className="text-xs text-gray-500">Loading…</span>}
+                    <button onClick={async () => {
+                      try {
+                        setChatLoading(true)
+                        // Force create Community Group
+                        const { residents } = await residentService.listResidents()
+                        const residentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+                        const allIds = [...residentIds]
+                        if (!allIds.includes(user.id)) {
+                          allIds.push(user.id)
+                        }
+                        console.log('Manual refresh: Creating Community Group with IDs:', allIds)
+                        await chatService.createOrGetGroupRoom('Community Group', allIds)
+                        
+                        // Reload rooms
+                        const { rooms } = await chatService.listRooms(user.id)
+                        console.log('Manual refresh - Loaded rooms:', rooms)
+                        setChatRooms(rooms || [])
+                        
+                        // Auto-select Community Group if available
+                        const communityGroup = rooms?.find(r => r.type === 'group' && r.name === 'Community Group')
+                        if (communityGroup) {
+                          setSelectedRoomId(communityGroup._id)
+                        }
+                      } catch (e) {
+                        console.error('Manual refresh error:', e)
+                      } finally {
+                        setChatLoading(false)
+                      }
+                    }} className="text-xs px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">
+                      Refresh
+                    </button>
+                  </div>
                   </div>
                   <div className="max-h-[60vh] overflow-auto">
                     {/* Group item */}
                     {(() => {
-                      const group = (chatRooms || []).find(r=>r.type==='group')
-                      if (!group) return null
+                      const group = (chatRooms || []).find(r=>r.type==='group' && r.name === 'Community Group')
+                      console.log('Resident chat: Rendering group item:', group)
+                      console.log('Resident chat: All chatRooms:', chatRooms)
+                      if (!group) {
+                        console.log('Resident chat: No Community Group found in chatRooms')
+                        return (
+                          <div className="p-3 border-b dark:border-gray-700 bg-yellow-50 dark:bg-yellow-900/20">
+                            <div className="text-xs text-yellow-800 dark:text-yellow-200">
+                              Community Group not found. Click Refresh to create it.
+                            </div>
+                          </div>
+                        )
+                      }
                       return (
                         <button key={group._id} onClick={()=>setSelectedRoomId(group._id)} className={`w-full text-left p-3 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 ${selectedRoomId===group._id ? 'bg-gray-50 dark:bg-gray-700' : ''}`}>
-                          <div className="text-sm text-gray-900 dark:text-white truncate">{group.name || 'Residents Group'}</div>
+                          <div className="text-sm text-gray-900 dark:text-white truncate">{group.name || 'Community Group'}</div>
                           <div className="text-xs text-gray-500">{new Date(group.lastMessageAt).toLocaleString?.() || ''}</div>
                         </button>
                       )
@@ -1054,8 +2356,27 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                         <div className="text-xs text-gray-500 truncate">{r.authUserId}</div>
                       </button>
                     ))}
-                    {(residentsList || []).length === 0 && (
-                      <p className="p-3 text-sm text-gray-600 dark:text-gray-400">No residents found.</p>
+                    
+                    {/* Admin users list for DM */}
+                    {(adminUsers || []).map(admin => (
+                      <button key={admin.authUserId} onClick={async ()=>{
+                        try {
+                          const { room } = await chatService.createOrGetDmRoom([user.id, admin.authUserId])
+                          setSelectedRoomId(room._id)
+                          const { rooms } = await chatService.listRooms(user.id)
+                          setChatRooms(rooms || [])
+                        } catch (e) { console.error(e); showError('Failed to Open Chat', 'Please try again later.') }
+                      }} className={`w-full text-left p-3 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 ${selectedRoomId && (chatRooms.find(rr=>rr._id===selectedRoomId)?.memberAuthUserIds||[]).includes(admin.authUserId) ? 'bg-gray-50 dark:bg-gray-700' : ''}`}>
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm text-gray-900 dark:text-white truncate">{admin.name}</div>
+                          <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-1 rounded">Admin</span>
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">{admin.authUserId}</div>
+                      </button>
+                    ))}
+                    
+                    {(residentsList || []).length === 0 && (adminUsers || []).length === 0 && (
+                      <p className="p-3 text-sm text-gray-600 dark:text-gray-400">No users found.</p>
                     )}
                   </div>
                 </div>
@@ -1065,10 +2386,12 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                   <div className="px-4 py-3 border-b dark:border-gray-700 flex items-center gap-3">
                     {(() => {
                       const room = (chatRooms || []).find(r=>r._id===selectedRoomId)
+                      console.log('Resident chat: Selected room:', room)
                       let label = 'Select a chat'
                       if (room) {
                         if (room.type === 'group') {
-                          label = room.name || 'Residents Group'
+                          label = room.name || 'Community Group'
+                          console.log('Resident chat: Group room members:', room.memberAuthUserIds)
                         } else {
                           const otherId = (room.memberAuthUserIds||[]).find(x=>x!==user.id)
                           const other = (residentsList||[]).find(r=>r.authUserId===otherId)
@@ -1103,6 +2426,44 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                             {!mine && <div className="text-[10px] text-gray-500 mb-0.5">{name}</div>}
                             <div className={`px-3 py-2 rounded-2xl shadow ${mine ? 'bg-gradient-to-br from-blue-600 to-blue-500 text-white rounded-tr-none ml-auto' : 'bg-gray-100 dark:bg-gray-700 dark:text-white rounded-tl-none'}`}>
                               {m.text && <div className="whitespace-pre-wrap text-[13px] leading-relaxed">{m.text}</div>}
+                              {m.media && (
+                                <div className="mt-2">
+                                  {m.media.type === 'image' && (
+                                    <img 
+                                      src={m.media.publicUrl || m.media.path} 
+                                      alt={m.media.originalName || 'Image'} 
+                                      className="max-w-full h-auto rounded-lg cursor-pointer"
+                                      onClick={() => window.open(m.media.publicUrl || m.media.path, '_blank')}
+                                    />
+                                  )}
+                                  {m.media.type === 'video' && (
+                                    <video 
+                                      src={m.media.publicUrl || m.media.path} 
+                                      controls 
+                                      className="max-w-full h-auto rounded-lg"
+                                    >
+                                      Your browser does not support the video tag.
+                                    </video>
+                                  )}
+                                  {(m.media.type === 'pdf' || m.media.type === 'document') && (
+                                    <div className="flex items-center gap-2 p-2 bg-gray-200 dark:bg-gray-600 rounded-lg">
+                                      <span className="text-lg">{chatFileService.getFileIcon(m.media.type)}</span>
+                                      <div className="flex-1">
+                                        <div className="text-sm font-medium">{m.media.originalName || 'Document'}</div>
+                                        <div className="text-xs text-gray-500">{chatFileService.formatFileSize(m.media.size)}</div>
+                                      </div>
+                                      <a 
+                                        href={m.media.publicUrl || m.media.path} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+                                      >
+                                        Open
+                                      </a>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             <div className={`text-[10px] text-gray-500 mt-1 ${mine ? '' : ''}`}>{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                           </div>
@@ -1113,9 +2474,70 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                       )
                     })}
                   </div>
-                  <div className="p-3 border-t dark:border-gray-700 flex items-center gap-2 bg-white dark:bg-gray-800 rounded-b-xl">
-                    <input value={composer} onChange={(e)=>setComposer(e.target.value)} onKeyDown={(e)=>{ if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendTextMessage() } }} className="flex-1 px-4 py-2 border dark:border-gray-600 rounded-full bg-white dark:bg-gray-700 text-gray-900 dark:text-white" placeholder="Type a message" />
-                    <button onClick={sendTextMessage} className="px-4 py-2 rounded-full bg-blue-600 text-white shadow hover:bg-blue-700">Send</button>
+                  <div className="p-3 border-t dark:border-gray-700 bg-white dark:bg-gray-800 rounded-b-xl">
+                    {/* Selected file preview */}
+                    {selectedFile && (
+                      <div className="mb-3 p-2 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center gap-2">
+                        <span className="text-lg">{chatFileService.getFileIcon(chatFileService.getFileType(selectedFile.type))}</span>
+                        <div className="flex-1">
+                          <div className="text-sm font-medium">{selectedFile.name}</div>
+                          <div className="text-xs text-gray-500">{chatFileService.formatFileSize(selectedFile.size)}</div>
+                        </div>
+                        <button 
+                          onClick={removeSelectedFile}
+                          className="text-red-500 hover:text-red-700"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                    
+                    <div className="flex items-center gap-2">
+                      {/* File upload button */}
+                      <label className="cursor-pointer">
+                        <input 
+                          type="file" 
+                          onChange={handleFileSelect}
+                          accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+                          className="hidden"
+                        />
+                        <div className="p-2 rounded-full bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                          📎
+                        </div>
+                      </label>
+                      
+                      <input 
+                        value={composer} 
+                        onChange={(e)=>setComposer(e.target.value)} 
+                        onKeyDown={(e)=>{ 
+                          if (e.key==='Enter' && !e.shiftKey) { 
+                            e.preventDefault(); 
+                            if (selectedFile) {
+                              sendFileMessage()
+                            } else {
+                              sendTextMessage()
+                            }
+                          } 
+                        }} 
+                        className="flex-1 px-4 py-2 border dark:border-gray-600 rounded-full bg-white dark:bg-gray-700 text-gray-900 dark:text-white" 
+                        placeholder={selectedFile ? "Add a caption (optional)..." : "Type a message"} 
+                      />
+                      
+                      <button 
+                        onClick={selectedFile ? sendFileMessage : sendTextMessage}
+                        className="px-4 py-2 rounded-full bg-blue-600 text-white shadow hover:bg-blue-700 flex items-center gap-2" 
+                        disabled={fileUploading}
+                      >
+                        {fileUploading ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                            Uploading...
+                          </>
+                        ) : (
+                          'Send'
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1127,15 +2549,75 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">My Notifications</h3>
-                {notifications.some(n => !n.isRead) && (
+                <div className="flex items-center gap-3">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    My Notifications 
+                    {notifications.length > 0 && (
+                      <span className="ml-2 px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded-full">
+                        {notifications.length}
+                      </span>
+                    )}
+                  </h3>
+                  {notificationsLoading && (
+                    <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+                      <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                      <span>Refreshing...</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
                   <button
-                    onClick={markAllNotificationsAsRead}
+                    onClick={loadNotifications}
                     className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                    title="Refresh notifications"
                   >
-                    Mark all as read
+                    🔄 Refresh
                   </button>
-                )}
+                  {notifications.some(n => !n.isRead || n.status === 'unread') && (
+                    <button
+                      onClick={markAllNotificationsAsRead}
+                      className="text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                    >
+                      Mark all as read
+                    </button>
+                  )}
+                  {notifications.length > 0 && (
+                    <button
+                      onClick={async () => {
+                        const confirmed = await showConfirm(
+                          'Delete All Notifications',
+                          'Are you sure you want to delete all notifications? This action cannot be undone.',
+                          'Delete All',
+                          'Cancel'
+                        )
+                        
+                        if (confirmed) {
+                          try {
+                            // Clear regular notifications
+                            await notificationService.markAllAsRead(user.id)
+                            
+                            // Clear delivery notifications
+                            const building = profile?.building || form?.building || 'A'
+                            const flatNumber = profile?.flatNumber || form?.flatNumber || '101'
+                            const key = `resident_notifications_${building}_${flatNumber}`
+                            localStorage.removeItem(key)
+                            
+                            // Clear the notifications state
+                            setNotifications([])
+                            
+                            showSuccess('All Notifications Deleted', 'All notifications have been successfully deleted.')
+                          } catch (error) {
+                            console.error('Error deleting notifications:', error)
+                            showError('Error', 'Failed to delete some notifications.')
+                          }
+                        }
+                      }}
+                      className="text-sm text-red-600 hover:text-red-800 dark:text-red-400"
+                    >
+                      🗑️ Delete All
+                    </button>
+                  )}
+                </div>
               </div>
 
               {notificationsLoading ? (
@@ -1155,7 +2637,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                       key={notification._id}
                       onClick={() => handleNotificationClick(notification)}
                       className={`p-4 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
-                        !notification.isRead ? 'border-blue-300 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-300 dark:border-gray-600'
+                        (!notification.isRead || notification.status === 'unread') ? 'border-blue-300 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-300 dark:border-gray-600'
                       }`}
                     >
                       <div className="flex items-start space-x-3">
@@ -1172,20 +2654,39 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                             <span className={`px-2 py-1 text-xs rounded ${
                               notification.type === 'bill' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
                               notification.type === 'complaint' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
+                              notification.type === 'delivery' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' :
                               notification.type === 'info' ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
-                              'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200'
+                              'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-200'
                             }`}>
-                              {notification.type}
+                              {notification.type === 'delivery' ? '📦 Delivery' : notification.type}
                             </span>
-                            {!notification.isRead && (
+                            {(!notification.isRead || notification.status === 'unread') && (
                               <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
                             )}
                           </div>
                           <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
                             {notification.message}
                           </p>
+                          
+                          {/* Delivery-specific details */}
+                          {notification.type === 'delivery' && notification.details && (
+                            <div className="mb-2 p-2 bg-green-50 dark:bg-green-900/20 rounded text-xs">
+                              <div className="flex items-center gap-4 text-green-700 dark:text-green-300">
+                                <span>🏪 {notification.details.vendor}</span>
+                                {notification.details.packageDescription && (
+                                  <span>📦 {notification.details.packageDescription}</span>
+                                )}
+                                {notification.details.trackingId && (
+                                  <span>🔍 {notification.details.trackingId}</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          
                           <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-500">
-                            <span>From: {notification.senderName}</span>
+                            <span>
+                              {notification.type === 'delivery' ? '📦 Delivery Notification' : `From: ${notification.senderName || 'System'}`}
+                            </span>
                             <span>{new Date(notification.createdAt).toLocaleString()}</span>
                           </div>
                         </div>
@@ -1197,12 +2698,24 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
             </div>
           </div>
         )
+      case 'delivery-notifications':
+        return <ResidentNotifications user={user} />
+      case 'map':
+        return <CommunityMap user={user} />
       case 'profile': {
         const view = profile || form
         return (
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Profile Information</h3>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Profile Information</h3>
+                <button
+                  onClick={() => setActiveTab('edit-profile')}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                >
+                  Edit Profile
+                </button>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <p className="text-sm text-gray-500 dark:text-gray-400">Name</p>
@@ -1233,8 +2746,165 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
           </div>
         )
       }
+      case 'edit-profile': {
+        return (
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Edit Profile</h3>
+                <button
+                  onClick={() => setActiveTab('profile')}
+                  className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-sm"
+                >
+                  Cancel
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
+                  <input 
+                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={user.name || form.name} 
+                    readOnly 
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Name cannot be changed</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={user.email || form.email} 
+                    readOnly 
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Email cannot be changed</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone</label>
+                  <input 
+                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={form.phone} 
+                    onChange={(e)=>setForm({...form, phone: e.target.value})} 
+                  />
+                  {errors.phone && <p className="mt-1 text-xs text-red-600">{errors.phone}</p>}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Owner Name</label>
+                  <input 
+                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={form.ownerName} 
+                    onChange={(e)=>setForm({...form, ownerName: e.target.value})} 
+                  />
+                  {errors.ownerName && <p className="mt-1 text-xs text-red-600">{errors.ownerName}</p>}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Building</label>
+                  <select
+                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={form.building}
+                    onChange={(e)=>handleBuildingChange(e.target.value)}
+                    disabled={flatsLoading}
+                  >
+                    <option value="">Select Building</option>
+                    {buildings.map(building => (
+                      <option key={building.id} value={building.id}>
+                        {building.name} - {building.floors} floors, {building.flatsPerFloor} flats/floor
+                      </option>
+                    ))}
+                  </select>
+                  {errors.building && <p className="mt-1 text-xs text-red-600">{errors.building}</p>}
+                  {flatsLoading && <p className="mt-1 text-xs text-gray-500">Loading buildings...</p>}
+                  {buildings.length > 0 && !flatsLoading && (
+                    <p className="mt-1 text-xs text-green-600">{buildings.length} buildings available</p>
+                  )}
+                  {form.building && (() => {
+                    const selectedBuilding = buildings.find(b => b.id === form.building)
+                    return selectedBuilding ? (
+                      <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <p className="text-xs text-gray-800 dark:text-gray-200 font-medium">Selected Building:</p>
+                        <p className="text-xs text-gray-700 dark:text-gray-300">
+                          {selectedBuilding.name} - {selectedBuilding.floors} floors, {selectedBuilding.flatsPerFloor} flats per floor
+                        </p>
+                        {selectedBuilding.description && (
+                          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                            {selectedBuilding.description}
+                          </p>
+                        )}
+                        <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                          Flat numbering: {selectedBuilding.flatsPerFloor} flats per floor (e.g., 101, 102, 103...)
+                        </p>
+                      </div>
+                    ) : null
+                  })()}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Flat Number</label>
+                  <select
+                    className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    value={form.flatNumber}
+                    onChange={(e)=>setForm({...form, flatNumber: e.target.value})}
+                    disabled={!form.building || flatsLoading}
+                  >
+                    <option value="">
+                      {flatsLoading ? 'Loading flats...' : 
+                       !form.building ? 'Select a building first' : 
+                       'Select Flat'}
+                    </option>
+                    {getFlatsForBuilding(form.building).map(flat => (
+                      <option key={flat.id} value={flat.flatNumber}>
+                        {flat.flatNumber} - Floor {flat.floor} • {flat.area} • {flat.bedrooms}BR/{flat.bathrooms}BA
+                      </option>
+                    ))}
+                  </select>
+                  {errors.flatNumber && <p className="mt-1 text-xs text-red-600">{errors.flatNumber}</p>}
+                  {!form.building && <p className="mt-1 text-xs text-gray-500">Please select a building first</p>}
+                  {form.building && getFlatsForBuilding(form.building).length === 0 && !flatsLoading && (
+                    <p className="mt-1 text-xs text-orange-600">No available flats found for this building</p>
+                  )}
+                  {form.building && getFlatsForBuilding(form.building).length > 0 && !flatsLoading && (
+                    <p className="mt-1 text-xs text-green-600">{getFlatsForBuilding(form.building).length} flats available in this building</p>
+                  )}
+                  {form.flatNumber && form.building && (() => {
+                    const selectedFlat = getFlatsForBuilding(form.building).find(f => f.flatNumber === form.flatNumber)
+                    return selectedFlat ? (
+                      <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                        <p className="text-xs text-blue-800 dark:text-blue-200 font-medium">Selected Flat Details:</p>
+                        <p className="text-xs text-blue-700 dark:text-blue-300">
+                          {selectedFlat.flatNumber} - Floor {selectedFlat.floor} • {selectedFlat.area} • {selectedFlat.bedrooms}BR/{selectedFlat.bathrooms}BA
+                        </p>
+                        {selectedFlat.amenities && selectedFlat.amenities.length > 0 && (
+                          <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                            Amenities: {selectedFlat.amenities.join(', ')}
+                          </p>
+                        )}
+                      </div>
+                    ) : null
+                  })()}
+                </div>
+              </div>
+              
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  onClick={() => setActiveTab('profile')}
+                  className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveProfile}
+                  disabled={!isProfileComplete || saving || Object.keys(errors).length > 0}
+                  className={`px-4 py-2 rounded-lg text-white ${(!isProfileComplete||saving) ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      }
       default:
-        return <div>Content not found</div>
+        return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Content not found for tab: {String(tabKey || '')}</div>
     }
   }
 
@@ -1289,7 +2959,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       </div>
 
       {/* Profile completion modal */}
-      {!profileLoading && needsProfile && !hasSaved && (
+      {false && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl p-6">
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-1">Complete your profile</h2>
@@ -1322,34 +2992,83 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                 {errors.ownerName && <p className="mt-1 text-xs text-red-600">{errors.ownerName}</p>}
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Flat Number</label>
-                <input className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  value={form.flatNumber} onChange={(e)=>setForm({...form, flatNumber: e.target.value})} />
-                {errors.flatNumber && <p className="mt-1 text-xs text-red-600">{errors.flatNumber}</p>}
-              </div>
-              <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Building</label>
                 <select
                   className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   value={form.building}
-                  onChange={(e)=>setForm({...form, building: e.target.value})}
+                  onChange={(e)=>handleBuildingChange(e.target.value)}
+                  disabled={flatsLoading}
                 >
                   <option value="">Select Building</option>
-                  <option value="A">Building A</option>
-                  <option value="B">Building B</option>
-                  <option value="C">Building C</option>
+                  {buildings.map(building => (
+                    <option key={building.id} value={building.id}>
+                      {building.name} - {building.floors} floors, {building.flatsPerFloor} flats/floor
+                    </option>
+                  ))}
                 </select>
                 {errors.building && <p className="mt-1 text-xs text-red-600">{errors.building}</p>}
+                {flatsLoading && <p className="mt-1 text-xs text-gray-500">Loading buildings...</p>}
+                {buildings.length > 0 && !flatsLoading && (
+                  <p className="mt-1 text-xs text-green-600">{buildings.length} buildings available</p>
+                )}
+                {form.building && (() => {
+                  const selectedBuilding = buildings.find(b => b.id === form.building)
+                  return selectedBuilding ? (
+                    <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                      <p className="text-xs text-gray-800 dark:text-gray-200 font-medium">Selected Building:</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300">
+                        {selectedBuilding.name} - {selectedBuilding.floors} floors, {selectedBuilding.flatsPerFloor} flats per floor
+                      </p>
+                      {selectedBuilding.description && (
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                          {selectedBuilding.description}
+                        </p>
+                      )}
+                      <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                        Flat numbering: {selectedBuilding.flatsPerFloor} flats per floor (e.g., 101, 102, 103...)
+                      </p>
+                    </div>
+                  ) : null
+                })()}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Flat Number</label>
+                <select
+                  className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  value={form.flatNumber}
+                  onChange={(e)=>setForm({...form, flatNumber: e.target.value})}
+                  disabled={flatsLoading || !form.building}
+                >
+                  <option value="">Select Flat</option>
+                  {availableFlats
+                    .filter(f => f.building === form.building)
+                    .map((f, i) => (
+                      <option key={`${f.building}-${f.flatNumber}-${i}`} value={f.flatNumber}>
+                        {f.flatNumber} - Floor {f.flatNumber?.charAt(0)} • 1200 sq ft • 3BR/2BA
+                      </option>
+                    ))}
+                </select>
+                {errors.flatNumber && <p className="mt-1 text-xs text-red-600">{errors.flatNumber}</p>}
+                {form.building && (
+                  <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                    <p className="text-xs text-blue-800 dark:text-blue-200 font-medium">Selected Flat Details:</p>
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                      {form.flatNumber ? `${form.flatNumber} - Floor ${form.flatNumber?.charAt(0)} • 1200 sq ft • 3BR/2BA` : 'Select a flat to see details'}
+                    </p>
+                    <p className="text-xs text-blue-600 dark:text-blue-300 mt-1">
+                      Amenities: Parking, Balcony, Power Backup, Gym, Swimming Pool
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
-            <div className="mt-6 flex justify-end gap-3">
-              <button disabled className="px-4 py-2 rounded-lg text-sm text-gray-500 cursor-not-allowed">Skip</button>
+            <div className="mt-6 flex items-center justify-between">
+              <button onClick={()=>{ setHasSaved(true); setNeedsProfile(false) }} className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">Skip</button>
               <button
                 onClick={handleSaveProfile}
-                disabled={!isProfileComplete || saving || Object.keys(errors).length > 0}
-                className={`px-4 py-2 rounded-lg text-white ${(!isProfileComplete||saving) ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
-                {saving ? 'Saving...' : 'Save and Continue'}
+                Save and Continue
               </button>
             </div>
           </div>

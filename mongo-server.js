@@ -33,7 +33,14 @@ const storage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
-    cb(null, 'visitor-' + uniqueSuffix + path.extname(file.originalname))
+    // Different prefixes for different types of uploads
+    let prefix = 'visitor' // default
+    if (req.route?.path?.includes('announcements')) {
+      prefix = 'announcement'
+    } else if (req.route?.path?.includes('chat')) {
+      prefix = 'chat'
+    }
+    cb(null, prefix + '-' + uniqueSuffix + path.extname(file.originalname))
   }
 })
 
@@ -43,11 +50,28 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024 // 10MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Allow images and PDFs
-    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
-      cb(null, true)
+    // For chat uploads, allow more file types
+    if (req.route?.path?.includes('chat')) {
+      const allowedTypes = [
+        'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+        'video/mp4', 'video/webm', 'video/quicktime',
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain'
+      ]
+      if (allowedTypes.includes(file.mimetype)) {
+        cb(null, true)
+      } else {
+        cb(new Error('File type not supported for chat'), false)
+      }
     } else {
-      cb(new Error('Only image and PDF files are allowed!'), false)
+      // For other uploads, allow only images and PDFs
+      if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+        cb(null, true)
+      } else {
+        cb(new Error('Only image and PDF files are allowed!'), false)
+      }
     }
   }
 })
@@ -117,6 +141,22 @@ residentSchema.pre('save', function(next) {
 
 const Resident = mongoose.model('Resident', residentSchema)
 
+// ResidentEntry schema for admin-managed residents (building/flat-based)
+const residentEntrySchema = new mongoose.Schema({
+  building: { type: String, required: true },
+  flatNumber: { type: String, required: true },
+  name: { type: String, required: true },
+  email: { type: String, required: true, index: true },
+  phone: { type: String },
+  aadharNumber: { type: String },
+  aadharUrl: { type: String },
+  isOwner: { type: Boolean, default: false },
+  verified: { type: Boolean, default: false },
+  supabaseUserId: { type: String }
+}, { timestamps: true })
+
+const ResidentEntry = mongoose.model('ResidentEntry', residentEntrySchema)
+
 // Routes
 
 // Health check
@@ -126,6 +166,82 @@ app.get('/api/health', (req, res) => {
     message: 'MongoDB API server is running',
     timestamp: new Date().toISOString()
   })
+})
+
+// ===== SERVICE REQUEST ROUTES =====
+// Schema for resident service requests (SRs)
+const serviceRequestSchema = new mongoose.Schema({
+  category: { type: String, default: 'general' },
+  priority: { type: String, default: 'medium', enum: ['low', 'medium', 'high', 'urgent'] },
+  description: { type: String, default: '' },
+  building: { type: String, default: '' },
+  flatNumber: { type: String, default: '' },
+  residentAuthUserId: { type: String, required: true, index: true },
+  residentName: { type: String, default: '' },
+  status: { type: String, default: 'created', enum: ['created', 'assigned', 'in_progress', 'completed', 'verified'] },
+  dueAt: { type: Date },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+})
+serviceRequestSchema.pre('save', function(next){ this.updatedAt = Date.now(); next() })
+const ServiceRequest = mongoose.model('ServiceRequest', serviceRequestSchema)
+
+// Create service request
+app.post('/api/service-requests', async (req, res) => {
+  try {
+    const payload = req.body || {}
+    if (!payload.residentAuthUserId) {
+      return res.status(400).json({ success: false, error: 'residentAuthUserId is required' })
+    }
+    const doc = new ServiceRequest(payload)
+    const saved = await doc.save()
+    res.status(201).json({ success: true, data: saved })
+  } catch (error) {
+    console.error('❌ Error creating service request:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// List service requests with optional filters
+app.get('/api/service-requests', async (req, res) => {
+  try {
+    const { residentAuthUserId, status, category, building, flatNumber, search, limit = 100, page = 1 } = req.query
+    const query = {}
+    if (residentAuthUserId) query.residentAuthUserId = residentAuthUserId
+    if (status && status !== 'all') query.status = status
+    if (category && category !== 'all') query.category = category
+    if (building) query.building = building
+    if (flatNumber) query.flatNumber = flatNumber
+    if (search) {
+      query.$or = [
+        { description: { $regex: search, $options: 'i' } },
+        { residentName: { $regex: search, $options: 'i' } },
+        { building: { $regex: search, $options: 'i' } },
+        { flatNumber: { $regex: search, $options: 'i' } }
+      ]
+    }
+    const skip = (parseInt(page) - 1) * parseInt(limit)
+    const docs = await ServiceRequest.find(query).sort({ createdAt: -1 }).limit(parseInt(limit)).skip(skip)
+    const total = await ServiceRequest.countDocuments(query)
+    res.json({ success: true, data: docs, pagination: { total, page: parseInt(page), limit: parseInt(limit), pages: Math.ceil(total / parseInt(limit)) } })
+  } catch (error) {
+    console.error('❌ Error listing service requests:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Update a service request
+app.put('/api/service-requests/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const update = { ...req.body, updatedAt: new Date() }
+    const doc = await ServiceRequest.findByIdAndUpdate(id, update, { new: true })
+    if (!doc) return res.status(404).json({ success: false, error: 'Service request not found' })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error updating service request:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
 })
 
 // Create visitor log
@@ -148,6 +264,36 @@ app.post('/api/visitors', async (req, res) => {
       success: false,
       error: error.message
     })
+  }
+})
+
+// Visitor stats route must be declared BEFORE :id to avoid route capture
+app.get('/api/visitors/stats', async (req, res) => {
+  try {
+    const { period = 'today' } = req.query
+    let startDate = new Date()
+    switch (period) {
+      case 'today':
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7)
+        break
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1)
+        break
+    }
+    const stats = await VisitorLog.aggregate([
+      { $addFields: { entryAt: { $ifNull: ['$entryTime', '$createdAt'] } } },
+      { $addFields: { entryAt: { $cond: [{ $eq: [{ $type: '$entryAt' }, 'string'] }, { $toDate: '$entryAt' }, '$entryAt'] } } },
+      { $match: { entryAt: { $gte: startDate } } },
+      { $group: { _id: null, totalVisitors: { $sum: 1 }, checkedIn: { $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] } }, checkedOut: { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } } } }
+    ])
+    const result = stats[0] || { totalVisitors: 0, checkedIn: 0, checkedOut: 0 }
+    res.json({ success: true, data: result })
+  } catch (error) {
+    console.error('❌ Error fetching visitor stats:', error)
+    res.status(500).json({ success: false, error: error.message })
   }
 })
 
@@ -247,7 +393,7 @@ const Payment = mongoose.model('Payment', paymentSchema)
 const notificationSchema = new mongoose.Schema({
   title: { type: String, required: true },
   message: { type: String, required: true },
-  type: { type: String, enum: ['info', 'warning', 'success', 'error', 'bill', 'complaint', 'visitor'], default: 'info' },
+  type: { type: String, enum: ['info', 'warning', 'success', 'error', 'bill', 'complaint', 'visitor', 'delivery'], default: 'info' },
   priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
   targetUsers: [{ type: String }], // Array of user IDs
   targetRoles: [{ type: String, enum: ['admin', 'resident', 'staff', 'security'] }], // Array of roles
@@ -260,11 +406,236 @@ const notificationSchema = new mongoose.Schema({
     billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill' },
     complaintId: { type: mongoose.Schema.Types.ObjectId, ref: 'Complaint' },
     visitorId: { type: mongoose.Schema.Types.ObjectId, ref: 'VisitorLog' },
+    deliveryId: { type: mongoose.Schema.Types.ObjectId },
     actionUrl: { type: String }
   }
 }, { timestamps: true })
 
 const Notification = mongoose.model('Notification', notificationSchema)
+
+// ===== Delivery Routes =====
+// Delivery Schema
+const deliverySchema = new mongoose.Schema({
+  vendor: { type: String, required: true },
+  vendorId: { type: String, default: '' },
+  flatNumber: { type: String, required: true },
+  building: { type: String, default: '' },
+  residentName: { type: String, default: '' },
+  agentName: { type: String, default: '' },
+  agentPhone: { type: String, default: '' },
+  trackingId: { type: String, default: '' },
+  packageDescription: { type: String, default: '' },
+  deliveryNotes: { type: String, default: '' },
+  status: { type: String, enum: ['pending', 'delivered', 'accepted', 'failed'], default: 'delivered' },
+  deliveryTime: { type: Date, default: Date.now },
+  securityOfficer: { type: String, default: '' },
+  proofUrl: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+})
+deliverySchema.pre('save', function(next) { this.updatedAt = Date.now(); next() })
+const Delivery = mongoose.model('Delivery', deliverySchema)
+
+// Create a delivery log
+app.post('/api/deliveries', async (req, res) => {
+  try {
+    const payload = req.body
+    const delivery = new Delivery(payload)
+    const saved = await delivery.save()
+
+    // Notify the resident (role-based) and targeted by building-flat identifier if available
+    try {
+      // Ensure we notify ONLY the selected resident
+      const resident = await Resident.findOne({ building: payload.building, flatNumber: payload.flatNumber })
+      const targetUsers = resident?.authUserId ? [resident.authUserId] : []
+      const notification = new Notification({
+        title: 'Package Delivered',
+        message: `Your ${payload.vendor} package has arrived at ${payload.building}-${payload.flatNumber}.`,
+        type: 'delivery',
+        priority: 'medium',
+        targetUsers,
+        targetRoles: [],
+        senderId: 'security',
+        senderName: payload.securityOfficer || 'Security',
+        metadata: { deliveryId: saved._id, actionUrl: '/deliveries' }
+      })
+      await notification.save()
+    } catch (notifErr) {
+      console.warn('Delivery notification failed:', notifErr.message)
+    }
+
+    res.status(201).json({ success: true, data: saved })
+  } catch (error) {
+    console.error('❌ Error creating delivery:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// Get delivery logs (filters: date, vendor, flatNumber, status, agentName, limit, offset)
+app.get('/api/deliveries', async (req, res) => {
+  try {
+    const { date, vendor, flatNumber, status, agentName, limit = 100, offset = 0 } = req.query
+    const query = {}
+    if (vendor) query.vendor = { $regex: vendor, $options: 'i' }
+    if (flatNumber) query.flatNumber = { $regex: flatNumber, $options: 'i' }
+    if (status && status !== 'all') query.status = status
+    if (agentName) query.agentName = { $regex: agentName, $options: 'i' }
+    if (date) {
+      const start = new Date(date); start.setHours(0,0,0,0)
+      const end = new Date(date); end.setDate(end.getDate() + 1); end.setHours(0,0,0,0)
+      query.deliveryTime = { $gte: start, $lt: end }
+    }
+    const docs = await Delivery.find(query).sort({ deliveryTime: -1 }).limit(parseInt(limit)).skip(parseInt(offset))
+    res.json({ success: true, data: docs })
+  } catch (error) {
+    console.error('❌ Error listing deliveries:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Update delivery status (e.g., accepted by resident)
+app.put('/api/deliveries/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { status, acceptedBy } = req.body
+    const update = { status, updatedAt: new Date() }
+    if (status === 'accepted') update.acceptedBy = acceptedBy
+    const doc = await Delivery.findByIdAndUpdate(id, update, { new: true })
+    if (!doc) return res.status(404).json({ success: false, error: 'Delivery not found' })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error updating delivery status:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Upload delivery proof photo
+app.post('/api/deliveries/:id/proof', upload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' })
+    const { id } = req.params
+    const filePath = `/uploads/${req.file.filename}`
+    const publicUrl = `http://localhost:3002${filePath}`
+    const doc = await Delivery.findByIdAndUpdate(id, { proofUrl: publicUrl, updatedAt: new Date() }, { new: true })
+    if (!doc) return res.status(404).json({ success: false, error: 'Delivery not found' })
+    res.json({ success: true, data: { publicUrl, path: filePath } })
+  } catch (error) {
+    console.error('❌ Error uploading delivery proof:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get delivery vendors (unique vendors from deliveries)
+app.get('/api/deliveries/vendors', async (req, res) => {
+  try {
+    const vendors = await Delivery.distinct('vendor')
+    const vendorData = vendors.map(vendor => ({ id: vendor, name: vendor }))
+    res.json({ success: true, data: vendorData })
+  } catch (error) {
+    console.error('❌ Error fetching vendors:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get delivery statistics
+app.get('/api/deliveries/stats', async (req, res) => {
+  try {
+    const { period = 'day' } = req.query
+    let startDate = new Date()
+    
+    switch (period) {
+      case 'day':
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7)
+        break
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1)
+        break
+    }
+    
+    const stats = await Delivery.aggregate([
+      { $match: { deliveryTime: { $gte: startDate } } },
+      {
+        $group: {
+          _id: null,
+          totalToday: { $sum: 1 },
+          delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+          accepted: { $sum: { $cond: [{ $eq: ['$status', 'accepted'] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } }
+        }
+      }
+    ])
+    
+    const result = stats[0] || { totalToday: 0, delivered: 0, accepted: 0, failed: 0 }
+    res.json({ success: true, data: result })
+  } catch (error) {
+    console.error('❌ Error fetching delivery stats:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get frequent agents for a vendor
+app.get('/api/deliveries/agents/:vendorId', async (req, res) => {
+  try {
+    const { vendorId } = req.params
+    const agents = await Delivery.aggregate([
+      { $match: { vendor: vendorId } },
+      {
+        $group: {
+          _id: { name: '$agentName', phone: '$agentPhone' },
+          count: { $sum: 1 },
+          lastDelivery: { $max: '$deliveryTime' }
+        }
+      },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ])
+    
+    const agentData = agents.map(agent => ({
+      name: agent._id.name,
+      phone: agent._id.phone,
+      deliveryCount: agent.count,
+      lastDelivery: agent.lastDelivery
+    }))
+    
+    res.json({ success: true, data: agentData })
+  } catch (error) {
+    console.error('❌ Error fetching frequent agents:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get delivery suggestions based on agent name
+app.get('/api/deliveries/suggestions', async (req, res) => {
+  try {
+    const { agentName } = req.query
+    if (!agentName || agentName.length < 2) {
+      return res.json({ success: true, data: null })
+    }
+    
+    const suggestions = await Delivery.find({
+      agentName: { $regex: agentName, $options: 'i' }
+    }).sort({ deliveryTime: -1 }).limit(5)
+    
+    res.json({ success: true, data: suggestions })
+  } catch (error) {
+    console.error('❌ Error fetching delivery suggestions:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get blacklisted agents
+app.get('/api/deliveries/agents/blacklisted', async (req, res) => {
+  try {
+    // For now, return empty array - can be extended with a blacklist collection
+    res.json({ success: true, data: [] })
+  } catch (error) {
+    console.error('❌ Error fetching blacklisted agents:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
 
 // Create a new bill
 app.post('/api/bills', async (req, res) => {
@@ -704,13 +1075,19 @@ app.post('/api/chat/rooms', async (req, res) => {
     } else if (type === 'group') {
       // find the named group; if exists, add members; else create
       const query = name ? { type: 'group', name } : { type: 'group' }
+      console.log('🔍 Looking for group with query:', query)
       room = await ChatRoom.findOne(query)
+      console.log('🔍 Found existing group:', room)
       if (!room) {
+        console.log('🔍 Creating new group with members:', memberAuthUserIds)
         room = new ChatRoom({ type: 'group', name: name || 'Residents Group', memberAuthUserIds })
         await room.save()
+        console.log('✅ Group created:', room._id)
       } else if (memberAuthUserIds && memberAuthUserIds.length) {
+        console.log('🔍 Adding members to existing group:', memberAuthUserIds)
         await ChatRoom.updateOne({ _id: room._id }, { $addToSet: { memberAuthUserIds: { $each: memberAuthUserIds } }, $set: { updatedAt: new Date() } })
         room = await ChatRoom.findById(room._id)
+        console.log('✅ Group updated with new members:', room.memberAuthUserIds)
       }
     }
     res.json({ success: true, room })
@@ -722,7 +1099,9 @@ app.get('/api/chat/rooms', async (req, res) => {
   try {
     const { me } = req.query
     if (!me) return res.status(400).json({ success: false, error: 'me required' })
+    console.log('🔍 Listing rooms for user:', me)
     const rooms = await ChatRoom.find({ memberAuthUserIds: me }).sort({ lastMessageAt: -1 })
+    console.log('🔍 Found rooms:', rooms.map(r => ({ id: r._id, type: r.type, name: r.name, members: r.memberAuthUserIds?.length })))
     res.json({ success: true, rooms })
   } catch (e) { res.status(500).json({ success: false, error: e.message }) }
 })
@@ -826,6 +1205,174 @@ app.post('/api/residents/:authUserId/restrict', async (req, res) => {
     res.json({ success: true, resident })
   } catch (error) {
     console.error('❌ Error updating restriction:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ===== Admin-managed resident entries (building/flat) =====
+// List by building/flat
+app.get('/api/residents/by-flat/:building/:flatNumber', async (req, res) => {
+  try {
+    const { building, flatNumber } = req.params
+    const list = await ResidentEntry.find({ building, flatNumber }).sort({ createdAt: -1 }).lean()
+    res.json({ success: true, residents: list })
+  } catch (error) {
+    console.error('❌ Error listing residents by flat:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Bulk create residents for a flat
+app.post('/api/residents/bulk', async (req, res) => {
+  try {
+    const { building, flatNumber, residents } = req.body || {}
+    if (!building || !flatNumber || !Array.isArray(residents)) {
+      return res.status(400).json({ success: false, error: 'Invalid payload' })
+    }
+
+    const incomingOwners = residents.filter(r => r.isOwner)
+    if (incomingOwners.length > 1) {
+      return res.status(400).json({ success: false, error: 'Only one owner allowed per flat' })
+    }
+
+    const existingOwners = await ResidentEntry.countDocuments({ building, flatNumber, isOwner: true })
+    if (existingOwners > 0 && incomingOwners.length > 0) {
+      return res.status(409).json({ success: false, error: 'Owner already exists for this flat' })
+    }
+
+    const docs = await ResidentEntry.insertMany((residents || []).map(r => ({
+      building,
+      flatNumber,
+      name: r.name,
+      email: r.email,
+      phone: r.phone,
+      aadharNumber: r.aadharNumber || '',
+      aadharUrl: r.aadharUrl || '',
+      isOwner: !!r.isOwner,
+      verified: false
+    })))
+    res.json({ success: true, data: { insertedCount: docs.length, residents: docs } })
+  } catch (error) {
+    console.error('❌ Error bulk-creating residents:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Delete all resident entries
+app.delete('/api/residents', async (_req, res) => {
+  try {
+    const result = await ResidentEntry.deleteMany({})
+    res.json({ success: true, data: { deleted: result.deletedCount } })
+  } catch (error) {
+    console.error('❌ Error deleting all residents:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// List all admin-managed resident entries
+app.get('/api/admin/resident-entries', async (_req, res) => {
+  try {
+    const list = await ResidentEntry.find({}).sort({ createdAt: -1 }).lean()
+    res.json({ success: true, data: list })
+  } catch (error) {
+    console.error('❌ Error listing resident entries:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Danger: Delete all resident profiles (self-registered profiles)
+app.delete('/api/resident-profiles', async (_req, res) => {
+  try {
+    const result = await Resident.deleteMany({})
+    res.json({ success: true, data: { deleted: result.deletedCount } })
+  } catch (error) {
+    console.error('❌ Error deleting resident profiles:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Update resident entry by ID
+app.put('/api/residents/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const update = req.body || {}
+    const doc = await ResidentEntry.findByIdAndUpdate(id, update, { new: true })
+    if (!doc) return res.status(404).json({ success: false, error: 'Not found' })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error updating resident:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Alias: Update admin-managed resident entry by ID
+app.put('/api/admin/resident-entries/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const update = req.body || {}
+    const doc = await ResidentEntry.findByIdAndUpdate(id, update, { new: true })
+    if (!doc) return res.status(404).json({ success: false, error: 'Not found' })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error updating admin resident entry:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Delete resident entry by ID
+app.delete('/api/residents/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const result = await ResidentEntry.findByIdAndDelete(id)
+    res.json({ success: true, data: { deleted: !!result } })
+  } catch (error) {
+    console.error('❌ Error deleting resident:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Alias: Delete admin-managed resident entry by ID
+app.delete('/api/admin/resident-entries/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const result = await ResidentEntry.findByIdAndDelete(id)
+    res.json({ success: true, data: { deleted: !!result } })
+  } catch (error) {
+    console.error('❌ Error deleting admin resident entry:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Verify resident details on login
+app.post('/api/residents/verify', async (req, res) => {
+  try {
+    const { email, name, aadharNumber, supabaseUserId, building, flatNumber } = req.body || {}
+    if (!email || !name || !aadharNumber || !supabaseUserId || !building || !flatNumber) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' })
+    }
+    const resident = await ResidentEntry.findOne({ email, building, flatNumber })
+    if (!resident) return res.status(404).json({ success: false, error: 'Resident not found' })
+    const nameMatch = (resident.name || '').toLowerCase().trim() === name.toLowerCase().trim()
+    const aadharMatch = (resident.aadharNumber || '').trim() === aadharNumber.trim()
+    if (nameMatch && aadharMatch) {
+      await ResidentEntry.updateOne({ _id: resident._id }, { verified: true, supabaseUserId })
+      return res.json({ success: true, data: { verified: true, resident } })
+    }
+    return res.json({ success: true, data: { verified: false, reason: 'Details do not match' } })
+  } catch (error) {
+    console.error('❌ Error verifying resident:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get resident entry by linked Supabase user
+app.get('/api/residents/by-user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params
+    const doc = await ResidentEntry.findOne({ supabaseUserId: userId })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error fetching resident by user:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })
@@ -961,6 +1508,7 @@ const visitorPassSchema = new mongoose.Schema({
   hostPhone: { type: String, default: '' },
   building: { type: String, default: '' },
   flatNumber: { type: String, default: '' },
+  directions: { type: String, default: '' },
   validUntil: { type: Date, required: true },
   status: { type: String, default: 'active', enum: ['active', 'used', 'expired'] },
   createdAt: { type: Date, default: Date.now },
@@ -992,19 +1540,112 @@ const chatMessageSchema = new mongoose.Schema({
   senderName: { type: String, default: '' },
   text: { type: String },
   media: {
-    type: { type: String, enum: ['image', 'video'] },
+    type: { type: String, enum: ['image', 'video', 'pdf', 'document'] },
     path: { type: String },
     thumbPath: { type: String },
     size: { type: Number },
     width: { type: Number },
     height: { type: Number },
-    durationMs: { type: Number }
+    durationMs: { type: Number },
+    originalName: { type: String },
+    mimeType: { type: String }
   },
   createdAt: { type: Date, default: Date.now },
   editedAt: { type: Date },
   deletedAt: { type: Date }
 })
 const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema)
+
+// ===== CHAT FILE UPLOAD =====
+// Upload chat files (images, videos, PDFs)
+app.post('/api/chat/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No file uploaded' })
+    }
+
+    const file = req.file
+    const allowedTypes = {
+      'image/jpeg': 'image',
+      'image/png': 'image',
+      'image/gif': 'image',
+      'image/webp': 'image',
+      'video/mp4': 'video',
+      'video/webm': 'video',
+      'video/quicktime': 'video',
+      'application/pdf': 'pdf',
+      'application/msword': 'document',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'document',
+      'text/plain': 'document'
+    }
+
+    const fileType = allowedTypes[file.mimetype]
+    if (!fileType) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'File type not supported. Allowed: images, videos, PDFs, documents' 
+      })
+    }
+
+    // Generate public URL - use the MongoDB server URL
+    const publicUrl = `http://localhost:3002/uploads/${file.filename}`
+
+    res.json({
+      success: true,
+      data: {
+        path: file.filename,
+        publicUrl,
+        originalName: file.originalname,
+        size: file.size,
+        mimeType: file.mimetype,
+        type: fileType
+      }
+    })
+  } catch (error) {
+    console.error('Chat file upload error:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ===== ANNOUNCEMENT MANAGEMENT =====
+
+// Announcement Schema
+const announcementSchema = new mongoose.Schema({
+  adminId: { type: String, required: true, index: true },
+  adminName: { type: String, default: '' },
+  adminEmail: { type: String, default: '' },
+  title: { type: String, required: true },
+  content: { type: String, required: true },
+  type: { 
+    type: String, 
+    default: 'announcement',
+    enum: ['announcement', 'event', 'festival', 'maintenance']
+  },
+  priority: { 
+    type: String, 
+    default: 'normal',
+    enum: ['low', 'normal', 'high', 'urgent']
+  },
+  location: { type: String, default: '' },
+  eventDate: { type: Date },
+  organizer: { type: String, default: '' },
+  image: { type: String, default: '' },
+  isActive: { type: Boolean, default: true },
+  targetRoles: { 
+    type: [String], 
+    default: ['resident', 'admin', 'staff', 'security'],
+    enum: ['resident', 'admin', 'staff', 'security']
+  },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+})
+
+announcementSchema.pre('save', function(next) {
+  this.updatedAt = Date.now()
+  next()
+})
+
+const Announcement = mongoose.model('Announcement', announcementSchema)
 
 // Create visitor pass
 app.post('/api/passes', async (req, res) => {
@@ -1013,6 +1654,11 @@ app.post('/api/passes', async (req, res) => {
     if (!visitorName || !visitorPhone || !hostAuthUserId || !validUntil) {
       return res.status(400).json({ success: false, error: 'Missing required fields' })
     }
+    // Generate simple directions text (can be enhanced later)
+    const floor = (flatNumber || '').toString().charAt(0)
+    const directions = building && flatNumber
+      ? `Enter through Security Gate → Proceed to Building ${building} → Take elevator to Floor ${floor} → Flat ${flatNumber}`
+      : ''
     const code = Math.random().toString(36).slice(2, 10).toUpperCase() + Date.now().toString(36).slice(-4).toUpperCase()
     const pass = new VisitorPass({
       code,
@@ -1024,6 +1670,7 @@ app.post('/api/passes', async (req, res) => {
       hostPhone,
       building,
       flatNumber,
+      directions,
       validUntil: new Date(validUntil)
     })
     const saved = await pass.save()
@@ -1114,6 +1761,229 @@ app.post('/api/passes/:code/status', async (req, res) => {
     res.json({ success: true, pass: saved })
   } catch (error) {
     console.error('❌ Error updating pass status:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ==================== ANNOUNCEMENT API ROUTES ====================
+
+// Upload announcement image endpoint
+app.post('/api/announcements/upload-image', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file uploaded'
+      })
+    }
+
+    const filePath = `/uploads/${req.file.filename}`
+    const publicUrl = `http://localhost:3002${filePath}`
+
+    console.log('✅ Announcement image uploaded:', req.file.filename)
+    res.json({
+      success: true,
+      data: {
+        filename: req.file.filename,
+        path: filePath,
+        publicUrl: publicUrl,
+        size: req.file.size
+      },
+      message: 'Image uploaded successfully'
+    })
+  } catch (error) {
+    console.error('❌ Error uploading announcement image:', error)
+    res.status(500).json({
+      success: false,
+      error: error.message
+    })
+  }
+})
+
+// Create a new announcement
+app.post('/api/announcements', async (req, res) => {
+  try {
+    const announcementData = req.body
+    const announcement = new Announcement(announcementData)
+    const savedAnnouncement = await announcement.save()
+    
+    console.log('✅ Announcement created:', savedAnnouncement._id)
+
+    // Send notification to targeted users
+    try {
+      const notification = new Notification({
+        title: 'New Announcement',
+        message: `${savedAnnouncement.title}: ${savedAnnouncement.content.substring(0, 100)}...`,
+        type: 'info',
+        priority: savedAnnouncement.priority === 'urgent' ? 'urgent' : savedAnnouncement.priority === 'high' ? 'high' : 'medium',
+        targetRoles: savedAnnouncement.targetRoles,
+        senderId: savedAnnouncement.adminId,
+        senderName: savedAnnouncement.adminName || 'Admin',
+        metadata: {
+          actionUrl: '/announcements'
+        }
+      })
+      await notification.save()
+      console.log('✅ Announcement notification sent')
+    } catch (notifError) {
+      console.error('❌ Error sending announcement notification:', notifError)
+    }
+    
+    res.status(201).json({ success: true, data: savedAnnouncement })
+  } catch (error) {
+    console.error('❌ Error creating announcement:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// Get all announcements with optional filtering
+app.get('/api/announcements', async (req, res) => {
+  try {
+    const { 
+      limit = 100, 
+      page = 1, 
+      type, 
+      priority, 
+      isActive = true, 
+      targetRole,
+      search 
+    } = req.query
+    
+    let query = {}
+    
+    // Filter by active status
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true'
+    }
+    
+    // Filter by type
+    if (type && type !== 'all') {
+      query.type = type
+    }
+    
+    // Filter by priority
+    if (priority && priority !== 'all') {
+      query.priority = priority
+    }
+    
+    // Filter by target role - admins see all announcements, others see only targeted ones
+    if (targetRole && targetRole !== 'admin') {
+      query.targetRoles = { $in: [targetRole] }
+    }
+    
+    // Search filter
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { content: { $regex: search, $options: 'i' } },
+        { location: { $regex: search, $options: 'i' } }
+      ]
+    }
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit)
+    
+    const announcements = await Announcement.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+    
+    const total = await Announcement.countDocuments(query)
+    
+    res.json({
+      success: true,
+      data: announcements,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    })
+  } catch (error) {
+    console.error('❌ Error fetching announcements:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get announcement statistics (must come before /:id route)
+app.get('/api/announcements/stats', async (req, res) => {
+  try {
+    const [
+      totalCount,
+      activeCount,
+      typeStats,
+      priorityStats
+    ] = await Promise.all([
+      Announcement.countDocuments(),
+      Announcement.countDocuments({ isActive: true }),
+      Announcement.aggregate([
+        { $match: { isActive: true } },
+        { $group: { _id: '$type', count: { $sum: 1 } } }
+      ]),
+      Announcement.aggregate([
+        { $match: { isActive: true } },
+        { $group: { _id: '$priority', count: { $sum: 1 } } }
+      ])
+    ])
+    
+    const typeCounts = typeStats.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {})
+    const priorityCounts = priorityStats.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {})
+    
+    res.json({
+      success: true,
+      data: {
+        totalAnnouncements: totalCount,
+        activeAnnouncements: activeCount,
+        inactiveAnnouncements: totalCount - activeCount,
+        typeCounts,
+        priorityCounts
+      }
+    })
+  } catch (error) {
+    console.error('❌ Error fetching announcement stats:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get announcement by ID
+app.get('/api/announcements/:id', async (req, res) => {
+  try {
+    const announcement = await Announcement.findById(req.params.id)
+    if (!announcement) {
+      return res.status(404).json({ success: false, error: 'Announcement not found' })
+    }
+    res.json({ success: true, data: announcement })
+  } catch (error) {
+    console.error('❌ Error fetching announcement:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Update announcement
+app.put('/api/announcements/:id', async (req, res) => {
+  try {
+    const updateData = { ...req.body, updatedAt: Date.now() }
+    const announcement = await Announcement.findByIdAndUpdate(req.params.id, updateData, { new: true })
+    if (!announcement) {
+      return res.status(404).json({ success: false, error: 'Announcement not found' })
+    }
+    res.json({ success: true, data: announcement })
+  } catch (error) {
+    console.error('❌ Error updating announcement:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// Delete announcement
+app.delete('/api/announcements/:id', async (req, res) => {
+  try {
+    const announcement = await Announcement.findByIdAndDelete(req.params.id)
+    if (!announcement) {
+      return res.status(404).json({ success: false, error: 'Announcement not found' })
+    }
+    res.json({ success: true, message: 'Announcement deleted successfully' })
+  } catch (error) {
+    console.error('❌ Error deleting announcement:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })

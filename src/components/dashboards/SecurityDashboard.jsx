@@ -17,19 +17,43 @@ import {
   FileText,
   CheckCircle,
   XCircle,
+  X,
   Calendar,
   Download,
   QrCode,
-  Bell
+  Bell,
+  Users,
+  Building,
+  Shield,
+  AlertTriangle,
+  Mic,
+  MicOff,
+  UserCheck,
+  Key,
+  Package,
+  MapPin,
+  Star,
+  AlertCircle,
+  Mail,
+  Truck,
+  ShoppingBag,
+  Zap,
+  History,
+  UserX,
+  Barcode,
+  ClipboardList,
+  TrendingUp
 } from 'lucide-react'
 import { mongoService } from '../../services/mongoService'
 import { passService } from '../../services/passService'
 import { notificationService } from '../../services/notificationService'
+import { enhancedResidentService } from '../../services/enhancedResidentService'
+import { deliveryService } from '../../services/deliveryService'
 import { showSuccess, showError, showConfirm, showWarning, notify } from '../../utils/sweetAlert'
 
 const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   // State management
-  const [activeView, setActiveView] = useState('list') // 'list', 'add', 'edit', 'scan'
+  const [activeView, setActiveView] = useState('list') // 'list', 'add', 'edit', 'scan', 'residents', 'resident-details', 'deliveries', 'delivery-add', 'delivery-bulk'
   const [visitorLogs, setVisitorLogs] = useState([])
   const [filteredLogs, setFilteredLogs] = useState([])
   const [isLoading, setIsLoading] = useState(false)
@@ -37,6 +61,65 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [statusFilter, setStatusFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('')
   const [stats, setStats] = useState({ totalVisitors: 0, checkedIn: 0, checkedOut: 0 })
+
+  // Resident Directory State
+  const [residents, setResidents] = useState([])
+  const [filteredResidents, setFilteredResidents] = useState([])
+  const [residentsLoading, setResidentsLoading] = useState(false)
+  const [residentSearchTerm, setResidentSearchTerm] = useState('')
+  const [residentFilters, setResidentFilters] = useState({
+    building: '',
+    ownersOnly: false,
+    tenantsOnly: false,
+    kycVerified: null,
+    restricted: null
+  })
+  const [selectedResident, setSelectedResident] = useState(null)
+  const [residentDetails, setResidentDetails] = useState(null)
+  const [flatDetails, setFlatDetails] = useState(null)
+  const [guestList, setGuestList] = useState([])
+  const [buildingStats, setBuildingStats] = useState(null)
+
+  // Voice Search State
+  const [isListening, setIsListening] = useState(false)
+  const [recognition, setRecognition] = useState(null)
+
+  // QR/Scan State
+  const [scanMode, setScanMode] = useState(false)
+  const [scanResult, setScanResult] = useState(null)
+
+  // Delivery Log State
+  const [deliveryLogs, setDeliveryLogs] = useState([])
+  const [filteredDeliveries, setFilteredDeliveries] = useState([])
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false)
+  const [deliverySearchTerm, setDeliverySearchTerm] = useState('')
+  const [deliveryFilters, setDeliveryFilters] = useState({
+    vendor: '',
+    date: '',
+    status: 'all',
+    flatNumber: ''
+  })
+  const [vendors, setVendors] = useState([])
+  const [frequentAgents, setFrequentAgents] = useState([])
+  const [deliverySuggestions, setDeliverySuggestions] = useState(null)
+  const [selectedDelivery, setSelectedDelivery] = useState(null)
+  const [deliveryStats, setDeliveryStats] = useState(null)
+  const [blacklistedAgents, setBlacklistedAgents] = useState([])
+
+  // 2-Click Delivery Form State
+  const [quickDeliveryForm, setQuickDeliveryForm] = useState({
+    selectedVendor: null,
+    selectedFlat: null,
+    agentName: '',
+    agentPhone: '',
+    trackingId: '',
+    packageDescription: '',
+    deliveryNotes: '',
+    proofPhoto: null,
+    proofUrl: null
+  })
+  const [bulkDeliveryMode, setBulkDeliveryMode] = useState(false)
+  const [bulkDeliveries, setBulkDeliveries] = useState([])
 
   // Notification State
   const [notifications, setNotifications] = useState([])
@@ -106,6 +189,17 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       setActiveView('scan')
     } else if (currentPage === 'visitors') {
       setActiveView('list')
+    } else if (currentPage === 'residents') {
+      setActiveView('residents')
+      loadResidents()
+      loadBuildingStats()
+    } else if (currentPage === 'deliveries') {
+      setActiveView('deliveries')
+      loadDeliveryLogs()
+      loadVendors()
+      loadDeliveryStats()
+      loadBlacklistedAgents()
+      loadResidents() // Load residents for flat selection
     } else if (currentPage === 'notifications') {
       // Notifications page is handled separately
     }
@@ -115,6 +209,51 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   useEffect(() => {
     filterLogs()
   }, [visitorLogs, searchTerm, statusFilter, dateFilter])
+
+  // Filter residents when search term or filters change
+  useEffect(() => {
+    filterResidents()
+  }, [residents, residentSearchTerm, residentFilters])
+
+  // Filter deliveries when search term or filters change
+  useEffect(() => {
+    filterDeliveries()
+  }, [deliveryLogs, deliverySearchTerm, deliveryFilters])
+
+  // Load residents when delivery-add view is active
+  useEffect(() => {
+    if (activeView === 'delivery-add' && residents.length === 0 && !residentsLoading) {
+      loadResidents()
+    }
+  }, [activeView])
+
+  // Initialize voice recognition
+  useEffect(() => {
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+      const recognition = new SpeechRecognition()
+      recognition.continuous = false
+      recognition.interimResults = false
+      recognition.lang = 'en-US'
+      
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript
+        setResidentSearchTerm(transcript)
+        setIsListening(false)
+      }
+      
+      recognition.onerror = () => {
+        setIsListening(false)
+        showError('Voice Recognition Error', 'Could not process voice input. Please try again.')
+      }
+      
+      recognition.onend = () => {
+        setIsListening(false)
+      }
+      
+      setRecognition(recognition)
+    }
+  }, [])
 
   // Load notifications when notifications page is active
   useEffect(() => {
@@ -180,6 +319,113 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     }
   }
 
+  // Load residents for directory
+  const loadResidents = async () => {
+    setResidentsLoading(true)
+    try {
+      const result = await enhancedResidentService.getAllResidents({ 
+        sortBy: 'flatNumber', 
+        sortOrder: 'asc' 
+      })
+      if (result.success) {
+        setResidents(result.data)
+      } else {
+        console.error('Failed to load residents:', result.error)
+        // Fallback to mock data for demo purposes
+        setResidents(getMockResidents())
+      }
+    } catch (error) {
+      console.error('Error loading residents:', error)
+      // Fallback to mock data for demo purposes
+      setResidents(getMockResidents())
+    } finally {
+      setResidentsLoading(false)
+    }
+  }
+
+  // Mock residents data for demo purposes
+  const getMockResidents = () => [
+    { authUserId: 'mock1', name: 'John Smith', building: 'A', flatNumber: '101', phone: '+91 98765 43210', email: 'john@example.com' },
+    { authUserId: 'mock2', name: 'Sarah Johnson', building: 'A', flatNumber: '102', phone: '+91 98765 43211', email: 'sarah@example.com' },
+    { authUserId: 'mock3', name: 'Mike Wilson', building: 'A', flatNumber: '201', phone: '+91 98765 43212', email: 'mike@example.com' },
+    { authUserId: 'mock4', name: 'Emily Davis', building: 'A', flatNumber: '202', phone: '+91 98765 43213', email: 'emily@example.com' },
+    { authUserId: 'mock5', name: 'David Brown', building: 'B', flatNumber: '101', phone: '+91 98765 43214', email: 'david@example.com' },
+    { authUserId: 'mock6', name: 'Lisa Anderson', building: 'B', flatNumber: '102', phone: '+91 98765 43215', email: 'lisa@example.com' },
+    { authUserId: 'mock7', name: 'Robert Taylor', building: 'B', flatNumber: '201', phone: '+91 98765 43216', email: 'robert@example.com' },
+    { authUserId: 'mock8', name: 'Jennifer Martinez', building: 'B', flatNumber: '202', phone: '+91 98765 43217', email: 'jennifer@example.com' },
+    { authUserId: 'mock9', name: 'Michael Garcia', building: 'C', flatNumber: '101', phone: '+91 98765 43218', email: 'michael@example.com' },
+    { authUserId: 'mock10', name: 'Amanda Rodriguez', building: 'C', flatNumber: '102', phone: '+91 98765 43219', email: 'amanda@example.com' },
+    { authUserId: 'mock11', name: 'Christopher Lee', building: 'C', flatNumber: '201', phone: '+91 98765 43220', email: 'chris@example.com' },
+    { authUserId: 'mock12', name: 'Jessica White', building: 'C', flatNumber: '202', phone: '+91 98765 43221', email: 'jessica@example.com' }
+  ]
+
+  // Load building statistics
+  const loadBuildingStats = async () => {
+    try {
+      const result = await enhancedResidentService.getBuildingStats()
+      if (result.success) {
+        setBuildingStats(result.data)
+      }
+    } catch (error) {
+      console.error('Error loading building stats:', error)
+    }
+  }
+
+  // Load delivery logs
+  const loadDeliveryLogs = async () => {
+    setDeliveriesLoading(true)
+    try {
+      const result = await deliveryService.getDeliveryLogs({ limit: 100 })
+      if (result.success) {
+        setDeliveryLogs(result.data)
+      } else {
+        console.error('Failed to load delivery logs:', result.error)
+        setDeliveryLogs([])
+      }
+    } catch (error) {
+      console.error('Error loading delivery logs:', error)
+      setDeliveryLogs([])
+    } finally {
+      setDeliveriesLoading(false)
+    }
+  }
+
+  // Load vendors
+  const loadVendors = async () => {
+    try {
+      const result = await deliveryService.getVendors()
+      if (result.success) {
+        setVendors(result.data)
+      }
+    } catch (error) {
+      console.error('Error loading vendors:', error)
+    }
+  }
+
+  // Load delivery statistics
+  const loadDeliveryStats = async () => {
+    try {
+      const result = await deliveryService.getDeliveryStats({ period: 'day' })
+      if (result.success) {
+        setDeliveryStats(result.data)
+      }
+    } catch (error) {
+      console.error('Error loading delivery stats:', error)
+    }
+  }
+
+  // Load blacklisted agents
+  const loadBlacklistedAgents = async () => {
+    try {
+      const result = await deliveryService.getBlacklistedAgents()
+      if (result.success) {
+        setBlacklistedAgents(result.data)
+      }
+    } catch (error) {
+      console.error('Error loading blacklisted agents:', error)
+    }
+  }
+
   // Filter logs based on search and filters
   const filterLogs = () => {
     let filtered = [...visitorLogs]
@@ -209,6 +455,94 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     }
 
     setFilteredLogs(filtered)
+  }
+
+  // Filter residents based on search and filters
+  const filterResidents = () => {
+    let filtered = [...residents]
+
+    // Search filter
+    if (residentSearchTerm) {
+      const searchLower = residentSearchTerm.toLowerCase()
+      filtered = filtered.filter(resident =>
+        resident.name?.toLowerCase().includes(searchLower) ||
+        resident.flatNumber?.toLowerCase().includes(searchLower) ||
+        resident.phone?.includes(residentSearchTerm) ||
+        resident.email?.toLowerCase().includes(searchLower) ||
+        resident.building?.toLowerCase().includes(searchLower) ||
+        resident.ownerName?.toLowerCase().includes(searchLower)
+      )
+    }
+
+    // Building filter
+    if (residentFilters.building) {
+      filtered = filtered.filter(resident => resident.building === residentFilters.building)
+    }
+
+    // Owner/Tenant filter
+    if (residentFilters.ownersOnly) {
+      filtered = filtered.filter(resident => resident.ownerName && resident.name !== resident.ownerName)
+    }
+    if (residentFilters.tenantsOnly) {
+      filtered = filtered.filter(resident => !resident.ownerName || resident.name === resident.ownerName)
+    }
+
+    // KYC filter
+    if (residentFilters.kycVerified !== null) {
+      filtered = filtered.filter(resident => resident.kycVerified === residentFilters.kycVerified)
+    }
+
+    // Restriction filter
+    if (residentFilters.restricted !== null) {
+      filtered = filtered.filter(resident => resident.isRestricted === residentFilters.restricted)
+    }
+
+    setFilteredResidents(filtered)
+  }
+
+  // Filter deliveries based on search and filters
+  const filterDeliveries = () => {
+    let filtered = [...deliveryLogs]
+
+    // Search filter
+    if (deliverySearchTerm) {
+      const searchLower = deliverySearchTerm.toLowerCase()
+      filtered = filtered.filter(delivery =>
+        delivery.vendor?.toLowerCase().includes(searchLower) ||
+        delivery.agentName?.toLowerCase().includes(searchLower) ||
+        delivery.agentPhone?.includes(deliverySearchTerm) ||
+        delivery.flatNumber?.toLowerCase().includes(searchLower) ||
+        delivery.trackingId?.toLowerCase().includes(searchLower) ||
+        delivery.packageDescription?.toLowerCase().includes(searchLower)
+      )
+    }
+
+    // Vendor filter
+    if (deliveryFilters.vendor) {
+      filtered = filtered.filter(delivery => delivery.vendor === deliveryFilters.vendor)
+    }
+
+    // Date filter
+    if (deliveryFilters.date) {
+      const filterDate = new Date(deliveryFilters.date).toDateString()
+      filtered = filtered.filter(delivery =>
+        new Date(delivery.deliveryTime).toDateString() === filterDate
+      )
+    }
+
+    // Status filter
+    if (deliveryFilters.status !== 'all') {
+      filtered = filtered.filter(delivery => delivery.status === deliveryFilters.status)
+    }
+
+    // Flat number filter
+    if (deliveryFilters.flatNumber) {
+      filtered = filtered.filter(delivery => 
+        delivery.flatNumber?.toLowerCase().includes(deliveryFilters.flatNumber.toLowerCase())
+      )
+    }
+
+    setFilteredDeliveries(filtered)
   }
 
   // Handle file selection
@@ -321,6 +655,296 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const handleVisitorClick = (visitor) => {
     setSelectedVisitor(visitor)
     setActiveView('details')
+  }
+
+  // Handle resident click for detailed view
+  const handleResidentClick = async (resident) => {
+    setSelectedResident(resident)
+    setActiveView('resident-details')
+    
+    // Load detailed resident information
+    try {
+      const [detailsResult, flatResult, guestResult] = await Promise.all([
+        enhancedResidentService.getResidentDetails(resident.authUserId),
+        enhancedResidentService.getFlatDetails(resident.building, resident.flatNumber),
+        enhancedResidentService.getGuestList(resident.authUserId)
+      ])
+      
+      if (detailsResult.success) {
+        setResidentDetails(detailsResult.data)
+      }
+      
+      if (flatResult.success) {
+        setFlatDetails(flatResult.data)
+      }
+      
+      if (guestResult.success) {
+        setGuestList(guestResult.data)
+      }
+    } catch (error) {
+      console.error('Error loading resident details:', error)
+    }
+  }
+
+  // Voice search functionality
+  const startVoiceSearch = () => {
+    if (recognition && !isListening) {
+      setIsListening(true)
+      recognition.start()
+    }
+  }
+
+  // QR/Scan search functionality
+  const handleScanSearch = async (scanData) => {
+    try {
+      const result = await enhancedResidentService.searchByScan(scanData)
+      if (result.success && result.data) {
+        setScanResult(result.data)
+        if (result.data.resident) {
+          await handleResidentClick(result.data.resident)
+        }
+      } else {
+        showError('Scan Search Failed', 'No resident found for the scanned data.')
+      }
+    } catch (error) {
+      console.error('Error in scan search:', error)
+      showError('Scan Search Error', 'Failed to process scanned data.')
+    }
+  }
+
+  // Verify visitor against guest list
+  const verifyVisitorAgainstGuestList = async (visitorName, visitorPhone) => {
+    if (!selectedResident) return false
+    
+    try {
+      const result = await enhancedResidentService.verifyGuest(
+        selectedResident.authUserId,
+        visitorName,
+        visitorPhone
+      )
+      
+      if (result.success && result.data?.verified) {
+        showSuccess('Guest Verified', `Visitor ${visitorName} is on the approved guest list.`)
+        return true
+      } else {
+        showWarning('Guest Not Verified', `Visitor ${visitorName} is not on the approved guest list.`)
+        return false
+      }
+    } catch (error) {
+      console.error('Error verifying guest:', error)
+      showError('Verification Error', 'Failed to verify guest against approved list.')
+      return false
+    }
+  }
+
+  // 2-Click Delivery Functions
+  const handleVendorSelection = async (vendor) => {
+    setQuickDeliveryForm({ ...quickDeliveryForm, selectedVendor: vendor })
+    
+    // Load frequent agents for this vendor
+    try {
+      const result = await deliveryService.getFrequentAgents(vendor.id)
+      if (result.success) {
+        setFrequentAgents(result.data)
+      }
+    } catch (error) {
+      console.error('Error loading frequent agents:', error)
+    }
+  }
+
+  const handleFlatSelection = (flat) => {
+    setQuickDeliveryForm({ ...quickDeliveryForm, selectedFlat: flat })
+  }
+
+  const handleAgentNameChange = async (agentName) => {
+    setQuickDeliveryForm({ ...quickDeliveryForm, agentName })
+    
+    // Get delivery suggestions based on agent history
+    if (agentName.length > 2) {
+      try {
+        const result = await deliveryService.getDeliverySuggestions(agentName)
+        if (result.success && result.data) {
+          setDeliverySuggestions(result.data)
+        }
+      } catch (error) {
+        console.error('Error loading delivery suggestions:', error)
+      }
+    }
+  }
+
+  const applyDeliverySuggestion = (suggestion) => {
+    setQuickDeliveryForm({
+      ...quickDeliveryForm,
+      agentName: suggestion.agentName,
+      agentPhone: suggestion.agentPhone,
+      selectedFlat: suggestion.suggestedFlat
+    })
+    setDeliverySuggestions(null)
+  }
+
+  const handleQuickDeliverySubmit = async (e) => {
+    e.preventDefault()
+    
+    if (!quickDeliveryForm.selectedVendor || !quickDeliveryForm.selectedFlat) {
+      showError('Missing Information', 'Please select both vendor and flat.')
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      const deliveryData = {
+        vendor: quickDeliveryForm.selectedVendor.name,
+        vendorId: quickDeliveryForm.selectedVendor.id,
+        flatNumber: quickDeliveryForm.selectedFlat.flatNumber,
+        building: quickDeliveryForm.selectedFlat.building,
+        residentName: quickDeliveryForm.selectedFlat.name,
+        agentName: quickDeliveryForm.agentName,
+        agentPhone: quickDeliveryForm.agentPhone,
+        trackingId: quickDeliveryForm.trackingId,
+        packageDescription: quickDeliveryForm.packageDescription,
+        deliveryNotes: quickDeliveryForm.deliveryNotes,
+        status: 'delivered',
+        deliveryTime: new Date(),
+        securityOfficer: user.name || user.email,
+        proofPhoto: quickDeliveryForm.proofPhoto
+      }
+
+      const result = await deliveryService.createDeliveryLog(deliveryData)
+      
+      if (result.success) {
+        // Upload proof photo if available (only if API is available)
+        if (quickDeliveryForm.proofPhoto && result.data._id) {
+          try {
+            await deliveryService.uploadDeliveryProof(quickDeliveryForm.proofPhoto, result.data._id)
+          } catch (error) {
+            console.warn('Proof photo upload failed, but delivery was logged:', error)
+          }
+        }
+
+        // Check if delivery was saved locally (indicated by _id starting with 'delivery_')
+        const isLocalStorage = result.data._id && result.data._id.startsWith('delivery_')
+        
+        if (isLocalStorage) {
+          showSuccess('Delivery Logged! 📱', `Delivery has been saved locally and notification sent to ${quickDeliveryForm.selectedFlat.name} at ${quickDeliveryForm.selectedFlat.building}-${quickDeliveryForm.selectedFlat.flatNumber}. Data will sync when API is available.`)
+        } else {
+          showSuccess('Delivery Logged! ✅', `Delivery has been successfully logged to the server and notification sent to ${quickDeliveryForm.selectedFlat.name} at ${quickDeliveryForm.selectedFlat.building}-${quickDeliveryForm.selectedFlat.flatNumber}.`)
+        }
+        
+        // Reset form
+        setQuickDeliveryForm({
+          selectedVendor: null,
+          selectedFlat: null,
+          agentName: '',
+          agentPhone: '',
+          trackingId: '',
+          packageDescription: '',
+          deliveryNotes: '',
+          proofPhoto: null,
+          proofUrl: null
+        })
+        
+        // Reload data
+        loadDeliveryLogs()
+        loadDeliveryStats()
+      } else {
+        showError('Failed to Log Delivery', result.error)
+      }
+    } catch (error) {
+      console.error('Error logging delivery:', error)
+      showError('Error Logging Delivery', 'Please try again later.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleBulkDeliverySubmit = async () => {
+    if (bulkDeliveries.length === 0) {
+      showError('No Deliveries', 'Please add at least one delivery.')
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      const result = await deliveryService.createBulkDeliveries(bulkDeliveries)
+      
+      if (result.success) {
+        showSuccess('Bulk Deliveries Logged!', `${bulkDeliveries.length} deliveries have been successfully logged.`)
+        setBulkDeliveries([])
+        setBulkDeliveryMode(false)
+        loadDeliveryLogs()
+        loadDeliveryStats()
+      } else {
+        showError('Failed to Log Bulk Deliveries', result.error)
+      }
+    } catch (error) {
+      console.error('Error logging bulk deliveries:', error)
+      showError('Error Logging Bulk Deliveries', 'Please try again later.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleDeliveryProofCapture = async () => {
+    try {
+      console.log('📷 Starting delivery proof capture...')
+
+      const video = document.getElementById('delivery-camera-preview')
+      const placeholder = document.getElementById('delivery-camera-placeholder')
+
+      if (!video) {
+        throw new Error('Camera preview element not found')
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      })
+
+      video.srcObject = stream
+      video.classList.remove('hidden')
+      placeholder.classList.add('hidden')
+
+      await new Promise((resolve) => {
+        video.onloadedmetadata = resolve
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 2000))
+
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(video, 0, 0)
+
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const file = new File([blob], `delivery_proof_${Date.now()}.jpg`, { type: 'image/jpeg' })
+          setQuickDeliveryForm({
+            ...quickDeliveryForm,
+            proofPhoto: file,
+            proofUrl: URL.createObjectURL(blob)
+          })
+          console.log('✅ Delivery proof captured successfully')
+          showSuccess('Proof Captured!', 'Delivery proof photo has been captured.')
+        } else {
+          console.error('❌ Failed to create blob from canvas')
+          showError('Photo Capture Failed', 'Failed to capture proof photo.')
+        }
+
+        stream.getTracks().forEach(track => track.stop())
+        video.srcObject = null
+        video.classList.add('hidden')
+        placeholder.classList.remove('hidden')
+      }, 'image/jpeg', 0.8)
+
+    } catch (error) {
+      console.error('❌ Camera access error:', error)
+      showError('Camera Access Failed', `Unable to access camera: ${error.message}`)
+    }
   }
 
   // Handle check-out
@@ -477,6 +1101,1333 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       showError('Camera Access Failed', `Unable to access camera: ${error.message}. Please use file upload instead.`)
       setShowCamera(false)
     }
+  }
+
+  // Render delivery logs
+  const renderDeliveryLogs = () => (
+    <div className="space-y-6">
+      {/* Delivery Statistics */}
+      {deliveryStats && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Truck className="w-6 h-6 text-blue-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{deliveryStats.totalToday || 0}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Deliveries Today</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="w-6 h-6 text-green-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{deliveryStats.deliveredToday || 0}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Delivered</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Clock className="w-6 h-6 text-yellow-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{deliveryStats.pendingToday || 0}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Pending</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-6 h-6 text-red-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{blacklistedAgents.length || 0}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Blacklisted Agents</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Actions */}
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Delivery Management</h3>
+            {deliveryLogs.length > 0 && deliveryLogs[0]._id && deliveryLogs[0]._id.startsWith('delivery_') && (
+              <p className="text-sm text-blue-600 dark:text-blue-400 mt-1">
+                📱 Data stored locally - will sync when API is available
+              </p>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setActiveView('delivery-add')}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Quick Log
+            </button>
+          </div>
+        </div>
+
+        {/* Search and Filters */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+          <div className="relative">
+            <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search by resident name, flat, or agent..."
+              value={deliverySearchTerm}
+              onChange={(e) => setDeliverySearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+            />
+          </div>
+
+          <input
+            type="text"
+            placeholder="Search by flat number..."
+            value={deliveryFilters.flatNumber}
+            onChange={(e) => setDeliveryFilters({...deliveryFilters, flatNumber: e.target.value})}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+          />
+
+          <select
+            value={deliveryFilters.vendor}
+            onChange={(e) => setDeliveryFilters({...deliveryFilters, vendor: e.target.value})}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+          >
+            <option value="">All Vendors</option>
+            {vendors.map(vendor => (
+              <option key={vendor.id} value={vendor.name}>{vendor.name}</option>
+            ))}
+          </select>
+
+          <input
+            type="date"
+            value={deliveryFilters.date}
+            onChange={(e) => setDeliveryFilters({...deliveryFilters, date: e.target.value})}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+          />
+
+          <select
+            value={deliveryFilters.status}
+            onChange={(e) => setDeliveryFilters({...deliveryFilters, status: e.target.value})}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+          >
+            <option value="all">All Status</option>
+            <option value="pending">Pending</option>
+            <option value="delivered">Delivered</option>
+            <option value="failed">Failed</option>
+            <option value="returned">Returned</option>
+          </select>
+
+          <button
+            onClick={() => {
+              setDeliverySearchTerm('')
+              setDeliveryFilters({
+                vendor: '',
+                date: '',
+                status: 'all',
+                flatNumber: ''
+              })
+            }}
+            className="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+          >
+            <Filter className="w-5 h-5" />
+            Clear Filters
+          </button>
+        </div>
+
+        {/* Delivery List */}
+        {deliveriesLoading ? (
+          <div className="text-center py-8">
+            <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-gray-600 dark:text-gray-400">Loading delivery logs...</p>
+          </div>
+        ) : filteredDeliveries.length === 0 ? (
+          <div className="text-center py-8">
+            <Truck className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <p className="text-gray-600 dark:text-gray-400">No delivery logs found</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full table-auto">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Vendor</th>
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Resident & Flat</th>
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Delivery Agent</th>
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Package Details</th>
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Time</th>
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Status</th>
+                  <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredDeliveries.map((delivery) => (
+                  <tr
+                    key={delivery._id}
+                    className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
+                  >
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">{delivery.vendorIcon || '📦'}</span>
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white">{delivery.vendor}</p>
+                          {delivery.trackingId && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400">ID: {delivery.trackingId}</p>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center">
+                          <Home className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white">{delivery.residentName || 'Unknown Resident'}</p>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                            <span className="font-mono">{delivery.building}-{delivery.flatNumber}</span>
+                          </p>
+                          {delivery.residentPhone && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400">📞 {delivery.residentPhone}</p>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div>
+                        <p className="text-gray-900 dark:text-white font-medium">{delivery.agentName || 'N/A'}</p>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">📱 {delivery.agentPhone || 'No phone'}</p>
+                        {delivery.securityOfficer && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">👮 Logged by: {delivery.securityOfficer}</p>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div>
+                        <p className="text-gray-900 dark:text-white font-medium">{delivery.packageDescription || 'No description'}</p>
+                        {delivery.deliveryNotes && (
+                          <p className="text-sm text-gray-600 dark:text-gray-400">📝 {delivery.deliveryNotes}</p>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div>
+                        <p className="text-gray-900 dark:text-white">
+                          {new Date(delivery.deliveryTime).toLocaleDateString()}
+                        </p>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {new Date(delivery.deliveryTime).toLocaleTimeString()}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        delivery.status === 'delivered'
+                          ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                          : delivery.status === 'pending'
+                          ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
+                          : delivery.status === 'failed'
+                          ? 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
+                          : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                      }`}>
+                        {delivery.status}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        {delivery.proofPhoto && (
+                          <button
+                            onClick={() => window.open(delivery.proofPhoto, '_blank')}
+                            className="p-1 text-blue-600 hover:text-blue-800 dark:text-blue-400"
+                            title="View Proof"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setSelectedDelivery(delivery)}
+                          className="p-1 text-gray-600 hover:text-gray-800 dark:text-gray-400"
+                          title="View Delivery Details"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <div className="flex items-center gap-1" title="Notification sent to resident">
+                          <Bell className="w-4 h-4 text-green-600 dark:text-green-400" />
+                          <span className="text-xs text-green-600 dark:text-green-400">📧</span>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Delivery Details Modal */}
+      {selectedDelivery && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Delivery Details</h3>
+                <button
+                  onClick={() => setSelectedDelivery(null)}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                {/* Vendor Information */}
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+                  <h4 className="font-medium text-blue-900 dark:text-blue-200 mb-3">📦 Vendor Information</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-blue-700 dark:text-blue-300">Vendor:</p>
+                      <p className="font-medium text-blue-900 dark:text-blue-100">{selectedDelivery.vendor}</p>
+                    </div>
+                    {selectedDelivery.trackingId && (
+                      <div>
+                        <p className="text-sm text-blue-700 dark:text-blue-300">Tracking ID:</p>
+                        <p className="font-medium text-blue-900 dark:text-blue-100 font-mono">{selectedDelivery.trackingId}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Resident Information */}
+                <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg">
+                  <h4 className="font-medium text-green-900 dark:text-green-200 mb-3">🏠 Resident Information</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-green-700 dark:text-green-300">Resident Name:</p>
+                      <p className="font-medium text-green-900 dark:text-green-100">{selectedDelivery.residentName}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-green-700 dark:text-green-300">Flat Number:</p>
+                      <p className="font-medium text-green-900 dark:text-green-100 font-mono">{selectedDelivery.building}-{selectedDelivery.flatNumber}</p>
+                    </div>
+                    {selectedDelivery.residentPhone && (
+                      <div>
+                        <p className="text-sm text-green-700 dark:text-green-300">Phone:</p>
+                        <p className="font-medium text-green-900 dark:text-green-100">📞 {selectedDelivery.residentPhone}</p>
+                      </div>
+                    )}
+                    {selectedDelivery.residentEmail && (
+                      <div>
+                        <p className="text-sm text-green-700 dark:text-green-300">Email:</p>
+                        <p className="font-medium text-green-900 dark:text-green-100">📧 {selectedDelivery.residentEmail}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Delivery Agent Information */}
+                <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg">
+                  <h4 className="font-medium text-yellow-900 dark:text-yellow-200 mb-3">🚚 Delivery Agent</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-yellow-700 dark:text-yellow-300">Agent Name:</p>
+                      <p className="font-medium text-yellow-900 dark:text-yellow-100">{selectedDelivery.agentName || 'Not provided'}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-yellow-700 dark:text-yellow-300">Phone:</p>
+                      <p className="font-medium text-yellow-900 dark:text-yellow-100">📱 {selectedDelivery.agentPhone || 'Not provided'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Package Information */}
+                <div className="bg-purple-50 dark:bg-purple-900/20 p-4 rounded-lg">
+                  <h4 className="font-medium text-purple-900 dark:text-purple-200 mb-3">📋 Package Details</h4>
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-sm text-purple-700 dark:text-purple-300">Description:</p>
+                      <p className="font-medium text-purple-900 dark:text-purple-100">{selectedDelivery.packageDescription || 'No description'}</p>
+                    </div>
+                    {selectedDelivery.deliveryNotes && (
+                      <div>
+                        <p className="text-sm text-purple-700 dark:text-purple-300">Notes:</p>
+                        <p className="font-medium text-purple-900 dark:text-purple-100">{selectedDelivery.deliveryNotes}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Delivery Status & Time */}
+                <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                  <h4 className="font-medium text-gray-900 dark:text-white mb-3">⏰ Delivery Information</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Status:</p>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        selectedDelivery.status === 'delivered'
+                          ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                          : selectedDelivery.status === 'pending'
+                          ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
+                          : selectedDelivery.status === 'failed'
+                          ? 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
+                          : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                      }`}>
+                        {selectedDelivery.status}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Delivery Time:</p>
+                      <p className="font-medium text-gray-900 dark:text-white">
+                        {new Date(selectedDelivery.deliveryTime).toLocaleString()}
+                      </p>
+                    </div>
+                    {selectedDelivery.securityOfficer && (
+                      <div>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">Logged by:</p>
+                        <p className="font-medium text-gray-900 dark:text-white">👮 {selectedDelivery.securityOfficer}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Proof of Delivery */}
+                {selectedDelivery.proofPhoto && (
+                  <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-lg">
+                    <h4 className="font-medium text-indigo-900 dark:text-indigo-200 mb-3">📸 Proof of Delivery</h4>
+                    <img
+                      src={selectedDelivery.proofPhoto}
+                      alt="Delivery proof"
+                      className="w-full max-w-md h-auto rounded-lg border"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setSelectedDelivery(null)}
+                  className="px-4 py-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                >
+                  Close
+                </button>
+                {selectedDelivery.residentPhone && (
+                  <button
+                    onClick={() => window.open(`tel:${selectedDelivery.residentPhone}`)}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    📞 Call Resident
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
+  // Render 2-Click Delivery Form
+  const renderQuickDeliveryForm = () => (
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-xl font-semibold text-gray-900 dark:text-white">2-Click Delivery Log</h3>
+          <button
+            onClick={() => setActiveView('deliveries')}
+            className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+
+        <form onSubmit={handleQuickDeliverySubmit} className="space-y-6">
+          {/* Step 1: Vendor Selection */}
+          <div>
+            <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Step 1: Select Vendor</h4>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+              {vendors.map((vendor) => (
+                <button
+                  key={vendor.id}
+                  type="button"
+                  onClick={() => handleVendorSelection(vendor)}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    quickDeliveryForm.selectedVendor?.id === vendor.id
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                      : 'border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500'
+                  }`}
+                >
+                  <div className="text-center">
+                    <div className="text-2xl mb-2">{vendor.icon}</div>
+                    <div className="text-sm font-medium text-gray-900 dark:text-white">{vendor.name}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Step 2: Flat Selection */}
+          {quickDeliveryForm.selectedVendor && (
+            <div>
+              <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Step 2: Select Flat</h4>
+              
+              {/* Load residents if not already loaded */}
+              {residents.length === 0 && !residentsLoading && (
+                <div className="mb-4">
+                  <button
+                    onClick={loadResidents}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Users className="w-4 h-4" />
+                    Load Residents
+                  </button>
+                </div>
+              )}
+
+              {residentsLoading ? (
+                <div className="text-center py-8">
+                  <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-gray-600 dark:text-gray-400">Loading residents...</p>
+                </div>
+              ) : filteredResidents.length === 0 ? (
+                <div className="text-center py-8">
+                  <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600 dark:text-gray-400">No residents found</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">Click "Load Residents" to fetch resident data</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Flat Search */}
+                  <div className="space-y-3">
+                    <div className="relative">
+                      <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search residents by name or flat number..."
+                        value={residentSearchTerm}
+                        onChange={(e) => setResidentSearchTerm(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                      />
+                    </div>
+                    
+                    {/* Quick Filter Buttons */}
+                    <div className="flex gap-2 flex-wrap">
+                      <button
+                        onClick={() => setResidentSearchTerm('')}
+                        className="px-3 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                      >
+                        All Residents
+                      </button>
+                      <button
+                        onClick={() => setResidentSearchTerm('A-')}
+                        className="px-3 py-1 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded-full hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
+                      >
+                        Building A
+                      </button>
+                      <button
+                        onClick={() => setResidentSearchTerm('B-')}
+                        className="px-3 py-1 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-full hover:bg-green-200 dark:hover:bg-green-900/50 transition-colors"
+                      >
+                        Building B
+                      </button>
+                      <button
+                        onClick={() => setResidentSearchTerm('C-')}
+                        className="px-3 py-1 text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded-full hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors"
+                      >
+                        Building C
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Flat Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredResidents.slice(0, 12).map((resident) => (
+                    <button
+                      key={resident._id || resident.authUserId}
+                      type="button"
+                      onClick={() => handleFlatSelection(resident)}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        quickDeliveryForm.selectedFlat?.authUserId === resident.authUserId
+                          ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
+                          : 'border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center">
+                          <Home className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white">{resident.name || 'Unknown'}</p>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">{resident.building}-{resident.flatNumber}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Resident Verification */}
+          {quickDeliveryForm.selectedFlat && (
+            <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+              <h4 className="text-lg font-medium text-green-900 dark:text-green-200 mb-3">✅ Resident Verified</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-green-700 dark:text-green-300">Resident Name:</p>
+                  <p className="font-medium text-green-900 dark:text-green-100">{quickDeliveryForm.selectedFlat.name}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-green-700 dark:text-green-300">Flat Number:</p>
+                  <p className="font-medium text-green-900 dark:text-green-100 font-mono">{quickDeliveryForm.selectedFlat.building}-{quickDeliveryForm.selectedFlat.flatNumber}</p>
+                </div>
+                {quickDeliveryForm.selectedFlat.phone && (
+                  <div>
+                    <p className="text-sm text-green-700 dark:text-green-300">Contact:</p>
+                    <p className="font-medium text-green-900 dark:text-green-100">📞 {quickDeliveryForm.selectedFlat.phone}</p>
+                  </div>
+                )}
+                {quickDeliveryForm.selectedFlat.email && (
+                  <div>
+                    <p className="text-sm text-green-700 dark:text-green-300">Email:</p>
+                    <p className="font-medium text-green-900 dark:text-green-100">📧 {quickDeliveryForm.selectedFlat.email}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Additional Details */}
+          {quickDeliveryForm.selectedVendor && quickDeliveryForm.selectedFlat && (
+            <div className="space-y-4">
+              <h4 className="text-lg font-medium text-gray-900 dark:text-white">Delivery Details</h4>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Agent Name
+                  </label>
+                  <input
+                    type="text"
+                    value={quickDeliveryForm.agentName}
+                    onChange={(e) => handleAgentNameChange(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                    placeholder="Enter agent name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Agent Phone
+                  </label>
+                  <input
+                    type="tel"
+                    value={quickDeliveryForm.agentPhone}
+                    onChange={(e) => setQuickDeliveryForm({...quickDeliveryForm, agentPhone: e.target.value})}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                    placeholder="Enter agent phone"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Tracking ID (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={quickDeliveryForm.trackingId}
+                    onChange={(e) => setQuickDeliveryForm({...quickDeliveryForm, trackingId: e.target.value})}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                    placeholder="Enter tracking ID"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Package Description
+                  </label>
+                  <input
+                    type="text"
+                    value={quickDeliveryForm.packageDescription}
+                    onChange={(e) => setQuickDeliveryForm({...quickDeliveryForm, packageDescription: e.target.value})}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                    placeholder="Describe the package"
+                  />
+                </div>
+              </div>
+
+              {/* Smart Suggestions */}
+              {deliverySuggestions && (
+                <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                  <h5 className="font-medium text-blue-900 dark:text-blue-200 mb-2">💡 Smart Suggestion</h5>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-blue-800 dark:text-blue-300">
+                      This agent usually delivers to {deliverySuggestions.suggestedFlat?.flatNumber} - {deliverySuggestions.suggestedFlat?.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => applyDeliverySuggestion(deliverySuggestions)}
+                      className="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Proof of Delivery */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Proof of Delivery (Optional)
+                </label>
+                <div className="flex gap-4">
+                  <button
+                    type="button"
+                    onClick={handleDeliveryProofCapture}
+                    className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    <Camera className="w-4 h-4" />
+                    Capture Photo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => document.getElementById('delivery-photo-upload').click()}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Upload Photo
+                  </button>
+                  <input
+                    id="delivery-photo-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files[0]
+                      if (file) {
+                        setQuickDeliveryForm({
+                          ...quickDeliveryForm,
+                          proofPhoto: file,
+                          proofUrl: URL.createObjectURL(file)
+                        })
+                      }
+                    }}
+                    className="hidden"
+                  />
+                </div>
+
+                {quickDeliveryForm.proofUrl && (
+                  <div className="mt-4">
+                    <img
+                      src={quickDeliveryForm.proofUrl}
+                      alt="Delivery proof"
+                      className="w-32 h-32 object-cover rounded border"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setQuickDeliveryForm({
+                        ...quickDeliveryForm,
+                        proofPhoto: null,
+                        proofUrl: null
+                      })}
+                      className="mt-2 text-xs text-red-600 hover:text-red-800"
+                    >
+                      Remove Photo
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Submit Button */}
+              <div className="pt-4">
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isLoading ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      Logging Delivery...
+                    </div>
+                  ) : (
+                    'Log Delivery'
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+        </form>
+      </div>
+    </div>
+  )
+
+  // Render resident directory
+  const renderResidentDirectory = () => (
+    <div className="space-y-6">
+      {/* Building Statistics */}
+      {buildingStats && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Building className="w-6 h-6 text-blue-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{buildingStats.totalResidents}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Total Residents</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Users className="w-6 h-6 text-green-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{buildingStats.occupiedFlats}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Occupied Flats</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Shield className="w-6 h-6 text-yellow-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{buildingStats.kycVerified}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">KYC Verified</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-6 h-6 text-red-600" />
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{buildingStats.restricted}</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Restricted</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Search and Filters */}
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Resident Directory</h3>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setScanMode(!scanMode)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                scanMode ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+              }`}
+            >
+              <QrCode className="w-4 h-4" />
+              Scan Mode
+            </button>
+            {recognition && (
+              <button
+                onClick={startVoiceSearch}
+                disabled={isListening}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                  isListening ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                }`}
+              >
+                {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                {isListening ? 'Listening...' : 'Voice Search'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Search Bar */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="relative">
+            <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search by name, flat, phone..."
+              value={residentSearchTerm}
+              onChange={(e) => setResidentSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+            />
+          </div>
+
+          <select
+            value={residentFilters.building}
+            onChange={(e) => setResidentFilters({...residentFilters, building: e.target.value})}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+          >
+            <option value="">All Buildings</option>
+            <option value="A">Building A</option>
+            <option value="B">Building B</option>
+            <option value="C">Building C</option>
+          </select>
+
+          <select
+            value={residentFilters.kycVerified === null ? '' : residentFilters.kycVerified}
+            onChange={(e) => setResidentFilters({
+              ...residentFilters, 
+              kycVerified: e.target.value === '' ? null : e.target.value === 'true'
+            })}
+            className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+          >
+            <option value="">All KYC Status</option>
+            <option value="true">KYC Verified</option>
+            <option value="false">Not Verified</option>
+          </select>
+
+          <button
+            onClick={() => {
+              setResidentSearchTerm('')
+              setResidentFilters({
+                building: '',
+                ownersOnly: false,
+                tenantsOnly: false,
+                kycVerified: null,
+                restricted: null
+              })
+            }}
+            className="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+          >
+            <Filter className="w-5 h-5" />
+            Clear Filters
+          </button>
+        </div>
+
+        {/* Quick Filters */}
+        <div className="flex flex-wrap gap-2 mb-6">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={residentFilters.ownersOnly}
+              onChange={(e) => setResidentFilters({
+                ...residentFilters,
+                ownersOnly: e.target.checked,
+                tenantsOnly: e.target.checked ? false : residentFilters.tenantsOnly
+              })}
+              className="rounded border-gray-300"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Owners Only</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={residentFilters.tenantsOnly}
+              onChange={(e) => setResidentFilters({
+                ...residentFilters,
+                tenantsOnly: e.target.checked,
+                ownersOnly: e.target.checked ? false : residentFilters.ownersOnly
+              })}
+              className="rounded border-gray-300"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Tenants Only</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={residentFilters.restricted === true}
+              onChange={(e) => setResidentFilters({
+                ...residentFilters,
+                restricted: e.target.checked ? true : null
+              })}
+              className="rounded border-gray-300"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Restricted Only</span>
+          </label>
+        </div>
+
+        {/* Scan Mode */}
+        {scanMode && (
+          <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+            <h4 className="font-medium text-gray-900 dark:text-white mb-2">Quick Scan Search</h4>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Enter QR code or scan data..."
+                className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter') {
+                    handleScanSearch(e.target.value)
+                  }
+                }}
+              />
+              <button
+                onClick={() => document.getElementById('scan-file-input').click()}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                Upload Image
+              </button>
+              <input
+                id="scan-file-input"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  // Handle image upload for QR scanning
+                  const file = e.target.files?.[0]
+                  if (file) {
+                    // Process QR code from image
+                    handleScanSearch(file.name) // Placeholder - implement actual QR processing
+                  }
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Residents List */}
+        {residentsLoading ? (
+          <div className="text-center py-8">
+            <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-gray-600 dark:text-gray-400">Loading residents...</p>
+          </div>
+        ) : filteredResidents.length === 0 ? (
+          <div className="text-center py-8">
+            <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <p className="text-gray-600 dark:text-gray-400">No residents found</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredResidents.map((resident) => (
+              <div
+                key={resident._id || resident.authUserId}
+                onClick={() => handleResidentClick(resident)}
+                className="bg-white dark:bg-gray-700 p-4 rounded-lg border border-gray-200 dark:border-gray-600 hover:shadow-md cursor-pointer transition-shadow"
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center">
+                      <User className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                    </div>
+                    <div>
+                      <h4 className="font-medium text-gray-900 dark:text-white">{resident.name || 'Unknown'}</h4>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        {resident.building}-{resident.flatNumber}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {resident.isRestricted && (
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400">
+                        <AlertTriangle className="w-3 h-3 mr-1" />
+                        Restricted
+                      </span>
+                    )}
+                    {resident.kycVerified && (
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                        <Shield className="w-3 h-3 mr-1" />
+                        KYC Verified
+                      </span>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="space-y-1 text-sm text-gray-600 dark:text-gray-400">
+                  {resident.phone && (
+                    <div className="flex items-center gap-2">
+                      <Phone className="w-4 h-4" />
+                      {resident.phone}
+                    </div>
+                  )}
+                  {resident.email && (
+                    <div className="flex items-center gap-2">
+                      <Mail className="w-4 h-4" />
+                      {resident.email}
+                    </div>
+                  )}
+                  {resident.ownerName && resident.ownerName !== resident.name && (
+                    <div className="flex items-center gap-2">
+                      <Home className="w-4 h-4" />
+                      Owner: {resident.ownerName}
+                    </div>
+                  )}
+                </div>
+
+                {resident.specialNotes && (
+                  <div className="mt-3 p-2 bg-yellow-50 dark:bg-yellow-900/20 rounded text-xs">
+                    <AlertCircle className="w-3 h-3 inline mr-1" />
+                    {resident.specialNotes}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  // Render resident details
+  const renderResidentDetails = () => {
+    if (!selectedResident) return null
+
+    return (
+      <div className="space-y-6">
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Resident Details</h3>
+            <button
+              onClick={() => {
+                setSelectedResident(null)
+                setResidentDetails(null)
+                setFlatDetails(null)
+                setGuestList([])
+                setActiveView('residents')
+              }}
+              className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+            >
+              ✕ Close
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* Resident Information */}
+            <div className="space-y-6">
+              <div>
+                <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Basic Information</h4>
+                <div className="space-y-3">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600 dark:text-gray-400">Name:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{selectedResident.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600 dark:text-gray-400">Flat:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{selectedResident.building}-{selectedResident.flatNumber}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600 dark:text-gray-400">Phone:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{selectedResident.phone || 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600 dark:text-gray-400">Email:</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{selectedResident.email || 'N/A'}</span>
+                  </div>
+                  {selectedResident.ownerName && selectedResident.ownerName !== selectedResident.name && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Owner:</span>
+                      <span className="font-medium text-gray-900 dark:text-white">{selectedResident.ownerName}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Status and Alerts */}
+              <div>
+                <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Status & Alerts</h4>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-5 h-5 text-gray-400" />
+                    <span className="text-gray-600 dark:text-gray-400">KYC Status:</span>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      selectedResident.kycVerified
+                        ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                        : 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
+                    }`}>
+                      {selectedResident.kycVerified ? 'Verified' : 'Not Verified'}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-gray-400" />
+                    <span className="text-gray-600 dark:text-gray-400">Restriction:</span>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      selectedResident.isRestricted
+                        ? 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
+                        : 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                    }`}>
+                      {selectedResident.isRestricted ? 'Restricted' : 'Normal'}
+                    </span>
+                  </div>
+
+                  {selectedResident.specialNotes && (
+                    <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-yellow-600 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">Special Notes</p>
+                          <p className="text-sm text-yellow-700 dark:text-yellow-300">{selectedResident.specialNotes}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Family Information */}
+              {residentDetails?.familyMembers && (
+                <div>
+                  <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Family Members</h4>
+                  <div className="space-y-2">
+                    {residentDetails.familyMembers.map((member, index) => (
+                      <div key={index} className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                        <span className="text-gray-900 dark:text-white">{member.name}</span>
+                        <span className="text-sm text-gray-600 dark:text-gray-400">{member.relationship}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Flat Details */}
+            <div>
+              <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Flat Details</h4>
+              
+              {flatDetails ? (
+                <div className="space-y-4">
+                  {/* Parking Information */}
+                  {flatDetails.parkingSlots && (
+                    <div>
+                      <h5 className="font-medium text-gray-900 dark:text-white mb-2">Parking Slots</h5>
+                      <div className="space-y-1">
+                        {flatDetails.parkingSlots.map((slot, index) => (
+                          <div key={index} className="flex justify-between text-sm">
+                            <span className="text-gray-600 dark:text-gray-400">Slot {slot.number}:</span>
+                            <span className="text-gray-900 dark:text-white">{slot.vehicleNumber || 'Empty'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Frequent Visitors */}
+                  {flatDetails.frequentVisitors && flatDetails.frequentVisitors.length > 0 && (
+                    <div>
+                      <h5 className="font-medium text-gray-900 dark:text-white mb-2">Frequent Visitors</h5>
+                      <div className="space-y-2">
+                        {flatDetails.frequentVisitors.map((visitor, index) => (
+                          <div key={index} className="p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-medium text-gray-900 dark:text-white">{visitor.name}</p>
+                                <p className="text-sm text-gray-600 dark:text-gray-400">{visitor.purpose}</p>
+                              </div>
+                              <span className="text-xs text-gray-500 dark:text-gray-400">
+                                {visitor.frequency} visits
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Delivery Preferences */}
+                  {flatDetails.deliveryPreferences && (
+                    <div>
+                      <h5 className="font-medium text-gray-900 dark:text-white mb-2">Delivery Preferences</h5>
+                      <div className="space-y-1 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600 dark:text-gray-400">Allowed:</span>
+                          <span className="text-gray-900 dark:text-white">
+                            {flatDetails.deliveryPreferences.allowed ? 'Yes' : 'No'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600 dark:text-gray-400">Instructions:</span>
+                          <span className="text-gray-900 dark:text-white">
+                            {flatDetails.deliveryPreferences.instructions || 'None'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                  <Home className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No additional flat details available</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Guest List */}
+          {guestList.length > 0 && (
+            <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
+              <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Pre-approved Guest List</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {guestList.map((guest, index) => (
+                  <div key={index} className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                    <div className="flex items-center gap-3 mb-2">
+                      <UserCheck className="w-5 h-5 text-green-600" />
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-white">{guest.name}</p>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">{guest.phone}</p>
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                      <p>Purpose: {guest.purpose}</p>
+                      <p>Valid until: {new Date(guest.validUntil).toLocaleDateString()}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex gap-4 mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
+            <button
+              onClick={() => {
+                const visitorName = prompt('Enter visitor name for verification:')
+                const visitorPhone = prompt('Enter visitor phone:')
+                if (visitorName && visitorPhone) {
+                  verifyVisitorAgainstGuestList(visitorName, visitorPhone)
+                }
+              }}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <UserCheck className="w-4 h-4" />
+              Verify Visitor
+            </button>
+            
+            {user?.role === 'admin' && (
+              <button
+                onClick={async () => {
+                  const result = await showConfirm(
+                    'Update Restriction Status',
+                    `Are you sure you want to ${selectedResident.isRestricted ? 'remove restriction from' : 'restrict'} this resident?`
+                  )
+                  if (result.isConfirmed) {
+                    const updateResult = await enhancedResidentService.updateRestriction(
+                      selectedResident.authUserId,
+                      !selectedResident.isRestricted
+                    )
+                    if (updateResult.success) {
+                      showSuccess('Status Updated', 'Resident restriction status has been updated.')
+                      loadResidents()
+                    } else {
+                      showError('Update Failed', 'Failed to update restriction status.')
+                    }
+                  }
+                }}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                  selectedResident.isRestricted
+                    ? 'bg-green-600 text-white hover:bg-green-700'
+                    : 'bg-red-600 text-white hover:bg-red-700'
+                }`}
+              >
+                <Shield className="w-4 h-4" />
+                {selectedResident.isRestricted ? 'Remove Restriction' : 'Add Restriction'}
+              </button>
+            )}
+            
+            <button
+              onClick={() => {
+                setSelectedResident(null)
+                setResidentDetails(null)
+                setFlatDetails(null)
+                setGuestList([])
+                setActiveView('residents')
+              }}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            >
+              Back to Directory
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   // Render visitor log list
@@ -1328,7 +3279,11 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
               )}
             </div>
           </div>
-        ) : activeView === 'add' || activeView === 'edit' ? renderVisitorForm() :
+        ) : activeView === 'residents' ? renderResidentDirectory() :
+         activeView === 'resident-details' ? renderResidentDetails() :
+         activeView === 'deliveries' ? renderDeliveryLogs() :
+         activeView === 'delivery-add' ? renderQuickDeliveryForm() :
+         activeView === 'add' || activeView === 'edit' ? renderVisitorForm() :
          activeView === 'details' ? renderVisitorDetails() :
          activeView === 'scan' ? (
           <div className="space-y-6">

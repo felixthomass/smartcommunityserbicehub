@@ -1,7 +1,7 @@
 // MongoDB service for visitor logs
 import { storageService } from './storageService'
 
-const MONGO_API_URL = 'http://localhost:3002' // We'll create a separate MongoDB API server
+const MONGO_API_URL = (import.meta?.env?.VITE_MONGO_API_URL && import.meta.env.VITE_MONGO_API_URL.trim()) || 'http://localhost:3002' // MongoDB API server
 
 export const mongoService = {
   /**
@@ -19,6 +19,180 @@ export const mongoService = {
       }
     } catch (error) {
       console.error('❌ MongoDB connection test failed:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Service Requests - Create
+   */
+  createServiceRequest: async (requestData) => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/service-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestData)
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(`Failed to create service request: ${response.status} ${text}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data || result }
+    } catch (error) {
+      console.error('❌ Error creating service request:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Service Requests - List (with optional filters)
+   */
+  listServiceRequests: async (filters = {}) => {
+    try {
+      const params = new URLSearchParams()
+      Object.entries(filters).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') params.append(k, v)
+      })
+      const qs = params.toString()
+      const url = `${MONGO_API_URL}/api/service-requests${qs ? `?${qs}` : ''}`
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch service requests: ${response.status} ${response.statusText}`)
+      }
+      const result = await response.json()
+      const data = result.data || result.requests || []
+      return { success: true, data }
+    } catch (error) {
+      console.error('❌ Error listing service requests:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Service Requests - Update (generic)
+   */
+  updateServiceRequest: async (id, updateData) => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/service-requests/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData)
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(`Failed to update service request: ${response.status} ${text}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data || result }
+    } catch (error) {
+      console.error('❌ Error updating service request:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Service Requests - Update status convenience
+   */
+  setServiceRequestStatus: async (id, status) => {
+    return mongoService.updateServiceRequest(id, { status })
+  },
+
+  // Admin: list resident entries created via Admin panel (building/flat-based)
+  getAdminResidentEntries: async () => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/admin/resident-entries`)
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to fetch resident entries: ${response.status} ${errorText}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('❌ Error fetching admin resident entries:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  // Admin: update a resident entry created via Admin panel
+  updateAdminResidentEntry: async (id, updateData) => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/admin/resident-entries/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData)
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to update resident entry: ${response.status} ${errorText}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('❌ Error updating admin resident entry:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  // Admin: set restriction flag on resident entry
+  setAdminResidentEntryRestriction: async (id, isRestricted) => {
+    return mongoService.updateAdminResidentEntry(id, { isRestricted })
+  },
+
+  // Danger: delete all admin-managed ResidentEntry docs
+  deleteAllResidentEntries: async () => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/residents`, { method: 'DELETE' })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to delete resident entries: ${response.status} ${errorText}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('❌ Error deleting resident entries:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  // Danger: delete all self-registered Resident profiles
+  deleteAllResidentProfiles: async () => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/resident-profiles`, { method: 'DELETE' })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to delete resident profiles: ${response.status} ${errorText}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('❌ Error deleting resident profiles:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  // One-shot purge: profiles + admin entries
+  purgeResidents: async () => {
+    const out = { profiles: null, entries: null }
+    out.profiles = await mongoService.deleteAllResidentProfiles()
+    out.entries = await mongoService.deleteAllResidentEntries()
+    return out
+  },
+
+  /**
+   * Delete all resident users (admin action)
+   */
+  deleteAllResidents: async () => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/residents`, { method: 'DELETE' })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(`Failed to delete residents: ${response.status} ${text}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result }
+    } catch (error) {
+      console.error('❌ Error deleting all residents:', error)
       return { success: false, error: error.message }
     }
   },

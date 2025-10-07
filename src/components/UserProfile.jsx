@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { User, Mail, Phone, Home, Building2, Save, Edit, X } from 'lucide-react'
 import { residentService } from '../services/residentService'
+import { mongoService } from '../services/mongoService'
 
 const UserProfile = () => {
   const { user, login } = useAuth()
@@ -32,7 +33,7 @@ const UserProfile = () => {
       }
       try {
         const { resident } = await residentService.getProfile(user.id)
-        setFormData({
+        let initial = {
           name: resident?.name || base.name,
           email: resident?.email || base.email,
           phone: resident?.phone || base.phone,
@@ -40,9 +41,59 @@ const UserProfile = () => {
           flatNumber: resident?.flatNumber || base.flatNumber,
           building: resident?.building || base.building,
           role: base.role
-        })
+        }
+        // Override with admin-assigned details if available
+        try {
+          const adminRes = await mongoService.getAdminResidentEntries?.()
+          if (adminRes?.success) {
+            const adminEntries = adminRes.data || []
+            const match = adminEntries.find(r => (r.email || '').toLowerCase() === (initial.email || '').toLowerCase())
+            if (match) {
+              initial = {
+                ...initial,
+                name: match.name || initial.name,
+                email: match.email || initial.email,
+                phone: match.phone || initial.phone,
+                flatNumber: match.flatNumber || initial.flatNumber,
+                building: match.building || initial.building
+              }
+            }
+
+            // Resolve owner name from admin entries for the selected flat
+            const resolvedBuilding = initial.building
+            const resolvedFlat = initial.flatNumber
+            if (resolvedBuilding && resolvedFlat) {
+              const ownerEntry = adminEntries.find(e => e.building === resolvedBuilding && e.flatNumber === resolvedFlat && e.isOwner)
+              if (ownerEntry?.name) {
+                initial.ownerName = ownerEntry.name
+              }
+            }
+          }
+        } catch {}
+        setFormData(initial)
       } catch (e) {
         // If 404/no profile yet, stick with base values
+        try {
+          const adminRes = await mongoService.getAdminResidentEntries?.()
+          if (adminRes?.success) {
+            const adminEntries = adminRes.data || []
+            const match = adminEntries.find(r => (r.email || '').toLowerCase() === (base.email || '').toLowerCase())
+            if (match) {
+              base.name = match.name || base.name
+              base.email = match.email || base.email
+              base.phone = match.phone || base.phone
+              base.flatNumber = match.flatNumber || base.flatNumber
+              base.building = match.building || base.building
+            }
+            // Resolve owner name
+            if (base.building && base.flatNumber) {
+              const ownerEntry = adminEntries.find(e => e.building === base.building && e.flatNumber === base.flatNumber && e.isOwner)
+              if (ownerEntry?.name) {
+                base.ownerName = ownerEntry.name
+              }
+            }
+          }
+        } catch {}
         setFormData(base)
       }
     }
@@ -127,13 +178,6 @@ const UserProfile = () => {
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 mb-6">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Profile</h1>
-            <button
-              onClick={() => setIsEditing(!isEditing)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              {isEditing ? <X className="w-4 h-4" /> : <Edit className="w-4 h-4" />}
-              {isEditing ? 'Cancel' : 'Edit Profile'}
-            </button>
           </div>
 
           {/* Message */}
@@ -245,16 +289,13 @@ const UserProfile = () => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Flat Number
                 </label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    name="flatNumber"
-                    value={formData.flatNumber}
-                    onChange={handleChange}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    placeholder="e.g., 101"
-                  />
-                ) : (
+              {isEditing ? (
+                <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                  <Home className="w-5 h-5 text-gray-400" />
+                  <span className="text-gray-900 dark:text-white">{formData.flatNumber || 'Not provided'}</span>
+                  <span className="ml-auto text-xs text-gray-500">(Assigned by Admin)</span>
+                </div>
+              ) : (
                   <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
                     <Home className="w-5 h-5 text-gray-400" />
                     <span className="text-gray-900 dark:text-white">{formData.flatNumber || 'Not provided'}</span>
@@ -265,19 +306,13 @@ const UserProfile = () => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Building
                 </label>
-                {isEditing ? (
-                  <select
-                    name="building"
-                    value={formData.building}
-                    onChange={handleChange}
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  >
-                    <option value="">Select Building</option>
-                    <option value="A">Building A</option>
-                    <option value="B">Building B</option>
-                    <option value="C">Building C</option>
-                  </select>
-                ) : (
+              {isEditing ? (
+                <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                  <Building2 className="w-5 h-5 text-gray-400" />
+                  <span className="text-gray-900 dark:text-white">{formData.building || 'Not provided'}</span>
+                  <span className="ml-auto text-xs text-gray-500">(Assigned by Admin)</span>
+                </div>
+              ) : (
                   <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
                     <Building2 className="w-5 h-5 text-gray-400" />
                     <span className="text-gray-900 dark:text-white">{formData.building || 'Not provided'}</span>

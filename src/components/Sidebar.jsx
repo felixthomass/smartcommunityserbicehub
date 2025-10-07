@@ -14,8 +14,12 @@ import {
   UserPlus,
   Menu,
   X,
-  ChevronLeftlog,
-  ChevronRight
+  ChevronLeft,
+  ChevronRight,
+  Building2,
+  UserCheck,
+  Truck,
+  Map
 } from 'lucide-react'
 import { notificationService } from '../services/notificationService'
 
@@ -34,32 +38,38 @@ const Sidebar = ({ user, currentPage, setCurrentPage, isCollapsed, setIsCollapse
       { id: 'notifications', label: 'Notifications', icon: Bell },
       { id: 'payments', label: 'Payments', icon: CreditCard },
       { id: 'announcements', label: 'Announcements', icon: Bell },
+      { id: 'add-residents', label: 'Add Residents', icon: UserPlus },
+      { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'reports', label: 'Reports', icon: BarChart3 },
       { id: 'settings', label: 'Settings', icon: Settings }
     ],
     resident: [
       { id: 'dashboard', label: 'Dashboard', icon: Home },
+      { id: 'service-requests', label: 'Service Requests', icon: Wrench },
       { id: 'payments', label: 'My Bills', icon: CreditCard },
+      { id: 'deliveries', label: 'Deliveries', icon: Truck },
       { id: 'complaints', label: 'My Complaints', icon: MessageSquare },
       { id: 'visitors', label: 'Visitor Management', icon: QrCode },
+      { id: 'map', label: 'Community Map', icon: Map },
       { id: 'notifications', label: 'Notifications', icon: Bell },
       { id: 'announcements', label: 'Announcements', icon: Bell },
       { id: 'chat', label: 'Chat', icon: MessageSquare },
       { id: 'profile', label: 'Profile', icon: Settings }
     ],
     staff: [
-      { id: 'dashboard', label: 'Dashboard', icon: Home },
       { id: 'tasks', label: 'My Tasks', icon: FileText },
       { id: 'maintenance', label: 'Bill Management', icon: CreditCard },
-      { id: 'complaints', label: 'Complaints', icon: MessageSquare },
-      { id: 'profile', label: 'Profile', icon: Settings }
+      { id: 'complaints', label: 'Complaints', icon: MessageSquare }
     ],
     security: [
       { id: 'dashboard', label: 'Dashboard', icon: Home },
       { id: 'visitors', label: 'Visitor Management', icon: QrCode },
+      { id: 'residents', label: 'Resident Directory', icon: Building2 },
+      { id: 'deliveries', label: 'Delivery Logs', icon: Truck },
       { id: 'scan-pass', label: 'Scan Pass', icon: QrCode },
       { id: 'incidents', label: 'Security Incidents', icon: Shield },
       { id: 'reports', label: 'Reports', icon: BarChart3 },
+      { id: 'notifications', label: 'Notifications', icon: Bell },
       { id: 'profile', label: 'Profile', icon: Settings }
     ]
   }
@@ -245,10 +255,10 @@ const Sidebar = ({ user, currentPage, setCurrentPage, isCollapsed, setIsCollapse
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                  {user?.name || 'User'}
+                  {user?.name || user?.email || 'User'}
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                  {user?.email || 'user@example.com'}
+                  {user?.email || ''}
                 </p>
               </div>
             </div>

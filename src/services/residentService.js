@@ -22,10 +22,37 @@ export const residentService = {
     return res.json()
   }
   ,
+  async adminCreateResidents(payload) {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) {
+      // No fallback: enforce storing only through MongoDB API
+      return { success: false, error: `API not available. Please start the server (npm run api) and ensure MONGODB_URI is set. Details: ${e.message}` }
+    }
+  },
   async listResidents() {
-    const res = await fetch(`${API_BASE}/api/residents`)
-    if (!res.ok) throw new Error('Failed to fetch residents')
-    return res.json()
+    try {
+      const res = await fetch(`${API_BASE}/api/residents`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  },
+  async deleteAllResidents() {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
   },
   async setRestriction(authUserId, restricted) {
     const res = await fetch(`${API_BASE}/api/residents/${encodeURIComponent(authUserId)}/restrict`, {
@@ -35,6 +62,56 @@ export const residentService = {
     })
     if (!res.ok) throw new Error('Failed to update restriction')
     return res.json()
+  },
+
+  async verifyResident(payload) {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  },
+
+  async getResidentByUserId(userId) {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents/by-user/${encodeURIComponent(userId)}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  }
+  ,
+  async listByFlat(building, flatNumber) {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents/by-flat/${encodeURIComponent(building)}/${encodeURIComponent(flatNumber)}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) {
+      return { success: false, error: e.message }
+    }
+  },
+  async updateResident(id, update) {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents/${encodeURIComponent(id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update)
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) { return { success: false, error: e.message } }
+  },
+  async deleteResident(id) {
+    try {
+      const res = await fetch(`${API_BASE}/api/residents/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res.json()
+    } catch (e) { return { success: false, error: e.message } }
   }
 }
 

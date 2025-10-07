@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { residentService } from '../services/residentService'
+import { mongoService } from '../services/mongoService'
 import { Users, Search, Filter, Edit, Trash2, Shield, User, Building2, Phone, Mail, Send, MessageSquare, Key, Ban, CheckCircle } from 'lucide-react'
 import { showWarning, notify } from '../utils/sweetAlert'
 
@@ -8,7 +9,7 @@ const AdminUserManagementSimple = () => {
   const { user } = useAuth()
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
-  const [searchTerm, setSearchTerm] = useState('')
+  const [searchTerm, setSearchTerm] = useState('') 
   const [roleFilter, setRoleFilter] = useState('all')
   const [editingUser, setEditingUser] = useState(null)
   const [message, setMessage] = useState({ type: '', text: '' })
@@ -19,20 +20,41 @@ const AdminUserManagementSimple = () => {
 
   const fetchUsers = async () => {
     try {
-      const { residents } = await residentService.listResidents()
-      // map residents to expected shape used by UI
-      const mapped = (residents || []).map(r => ({
-        id: r.authUserId || r._id,
-        name: r.name || '',
-        email: r.email || '',
-        phone: r.phone || '',
-        flat_number: r.flatNumber || '',
-        building: r.building || '',
-        isRestricted: !!r.isRestricted,
-        role: 'resident',
-        created_at: r.createdAt || new Date().toISOString()
-      }))
-      setUsers(mapped)
+      // Show ONLY residents added by admin via ResidentEntry
+      const res = await mongoService.getAdminResidentEntries?.()
+      if (res?.success) {
+        const mapped = (res.data || []).map(r => ({
+          id: r._id,
+          name: r.name || '',
+          email: r.email || '',
+          phone: r.phone || '',
+          flat_number: r.flatNumber || '',
+          building: r.building || '',
+          isOwner: !!r.isOwner,
+          isRestricted: !!r.isRestricted,
+          role: 'resident',
+          created_at: r.createdAt || new Date().toISOString(),
+          source: 'admin'
+        }))
+        setUsers(mapped)
+      } else {
+        // Fallback to existing residents if endpoint not wired
+        const { residents } = await residentService.listResidents()
+        const mapped = (residents || []).map(r => ({
+          id: r.authUserId || r._id,
+          name: r.name || '',
+          email: r.email || '',
+          phone: r.phone || '',
+          flat_number: r.flatNumber || '',
+          building: r.building || '',
+          isOwner: !!r.isOwner,
+          isRestricted: !!r.isRestricted,
+          role: 'resident',
+          created_at: r.createdAt || new Date().toISOString(),
+          source: 'legacy'
+        }))
+        setUsers(mapped)
+      }
     } catch (error) {
       console.error('Error fetching users:', error)
       setMessage({ type: 'error', text: 'Failed to load users' })
@@ -63,7 +85,12 @@ const AdminUserManagementSimple = () => {
   const toggleRestriction = async (userItem) => {
     try {
       const next = !userItem.isRestricted
-      const result = await residentService.setRestriction(userItem.id, next)
+      let result = { success: false }
+      if (userItem.source === 'admin') {
+        result = await mongoService.setAdminResidentEntryRestriction(userItem.id, next)
+      } else {
+        result = await residentService.setRestriction(userItem.id, next)
+      }
       if (result.success) {
         setUsers(users.map(u => u.id === userItem.id ? { ...u, isRestricted: next } : u))
         setMessage({ type: 'success', text: next ? 'Resident restricted' : 'Resident unrestricted' })
@@ -71,6 +98,49 @@ const AdminUserManagementSimple = () => {
     } catch (error) {
       console.error('Error updating restriction:', error)
       setMessage({ type: 'error', text: 'Failed to update restriction' })
+    }
+  }
+
+  const [editForm, setEditForm] = useState({})
+
+  const startEdit = (u) => {
+    setEditingUser(u.id)
+    setEditForm({
+      name: u.name || '',
+      email: u.email || '',
+      phone: u.phone || '',
+      isOwner: !!u.isOwner
+    })
+  }
+
+  const saveEdit = async (u) => {
+    try {
+      let result = { success: false }
+      if (u.source === 'admin') {
+        result = await mongoService.updateAdminResidentEntry(u.id, {
+          name: editForm.name,
+          email: editForm.email,
+          phone: editForm.phone,
+          isOwner: !!editForm.isOwner
+        })
+      } else {
+        result = await residentService.updateResident(u.id, {
+          name: editForm.name,
+          email: editForm.email,
+          phone: editForm.phone,
+          isOwner: !!editForm.isOwner
+        })
+      }
+      if (result.success) {
+        setUsers(users.map(x => x.id === u.id ? { ...x, ...editForm } : x))
+        setEditingUser(null)
+        setMessage({ type: 'success', text: 'Resident updated successfully' })
+      } else {
+        setMessage({ type: 'error', text: result.error || 'Update failed' })
+      }
+    } catch (e) {
+      console.error(e)
+      setMessage({ type: 'error', text: e.message || 'Update failed' })
     }
   }
 
@@ -248,36 +318,76 @@ const AdminUserManagementSimple = () => {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      {editingUser === user.id ? (
-                        <select
-                          value={user.role}
-                          onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                          className="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                        >
-                          <option value="resident">Resident</option>
-                          <option value="admin">Admin</option>
-                          <option value="staff">Staff</option>
-                          <option value="security">Security</option>
-                        </select>
-                      ) : (
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getRoleColor(user.role)}`}>
-                          <Shield className="w-3 h-3 mr-1" />
-                          {getRoleLabel(user.role)}
-                        </span>
-                      )}
+                      <div className="space-y-1">
+                        {editingUser === user.id ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <input
+                              value={editForm.name}
+                              onChange={(e)=>setEditForm({...editForm, name: e.target.value})}
+                              placeholder="Name"
+                              className="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-sm"
+                            />
+                            <input
+                              value={editForm.email}
+                              onChange={(e)=>setEditForm({...editForm, email: e.target.value})}
+                              placeholder="Email"
+                              className="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-sm"
+                            />
+                            <input
+                              value={editForm.phone}
+                              onChange={(e)=>setEditForm({...editForm, phone: e.target.value})}
+                              placeholder="Phone"
+                              className="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-sm"
+                            />
+                            <label className="inline-flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={!!editForm.isOwner}
+                                onChange={(e)=>setEditForm({...editForm, isOwner: e.target.checked})}
+                              />
+                              Owner
+                            </label>
+                          </div>
+                        ) : (
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getRoleColor(user.role)}`}>
+                            <Shield className="w-3 h-3 mr-1" />
+                            {getRoleLabel(user.role)}
+                          </span>
+                        )}
+                        <div className="text-xs text-gray-500 dark:text-gray-400">Owner: {user.isOwner ? 'Yes' : 'No'}</div>
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">
                       {new Date(user.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center space-x-2">
-                        <button
-                          onClick={() => setEditingUser(editingUser === user.id ? null : user.id)}
-                          className="text-blue-600 hover:text-blue-500"
-                          title="Edit user"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
+                        {editingUser === user.id ? (
+                          <>
+                            <button
+                              onClick={() => saveEdit(user)}
+                              className="text-green-600 hover:text-green-500"
+                              title="Save"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => { setEditingUser(null); setEditForm({}) }}
+                              className="text-gray-600 hover:text-gray-500"
+                              title="Cancel"
+                            >
+                              ✕
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => startEdit(user)}
+                            className="text-blue-600 hover:text-blue-500"
+                            title="Edit user"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                        )}
                         {(user.role === 'staff' || user.role === 'security') && (
                           <button
                             onClick={() => handleSendCredentials(user)}

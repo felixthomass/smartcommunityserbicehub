@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react'
-import { LogOut, Users, Shield, Plus, Eye, EyeOff, Search, Edit, Trash2, ArrowLeft, Filter, CreditCard, Bell } from 'lucide-react'
+import { LogOut, Users, Shield, Plus, Eye, EyeOff, Search, Edit, Trash2, ArrowLeft, Filter, CreditCard, Bell, MessageSquare, Calendar, MapPin, User } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { USER_ROLES, STAFF_DEPARTMENTS } from '../../services/authService'
 import { mongoService } from '../../services/mongoService'
 import AdminUserManagementSimple from '../AdminUserManagementSimple'
+import AdminAddResidents from '../AdminAddResidents'
 import { complaintService } from '../../services/complaintService'
 import { billService } from '../../services/billService'
 import { residentService } from '../../services/residentService'
 import { notificationService } from '../../services/notificationService'
 import { emailService } from '../../services/emailService'
+import { announcementService } from '../../services/announcementService'
+import { chatService } from '../../services/chatService'
+import { chatFileService } from '../../services/chatFileService'
 import { showSuccess, showError, showConfirm, showCredentials } from '../../utils/sweetAlert'
 
 const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
@@ -35,6 +39,9 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [filterRole, setFilterRole] = useState('all')
   const [complaints, setComplaints] = useState([])
   const [complaintsLoading, setComplaintsLoading] = useState(false)
+  // Service Requests (admin view)
+  const [serviceRequests, setServiceRequests] = useState([])
+  const [serviceRequestsLoading, setServiceRequestsLoading] = useState(false)
   const [complaintSearch, setComplaintSearch] = useState('')
   const [complaintStatus, setComplaintStatus] = useState('all') // all | open | resolved
   const [visitorLogs, setVisitorLogs] = useState([])
@@ -91,6 +98,53 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   })
   const [allUsers, setAllUsers] = useState([])
 
+  // Announcement Management State
+  const [announcements, setAnnouncements] = useState([])
+  const [announcementsLoading, setAnnouncementsLoading] = useState(false)
+  const [announcementView, setAnnouncementView] = useState('list') // 'list', 'create', 'edit', 'details'
+  const [selectedAnnouncement, setSelectedAnnouncement] = useState(null)
+  const [announcementStats, setAnnouncementStats] = useState({
+    totalAnnouncements: 0,
+    activeAnnouncements: 0,
+    inactiveAnnouncements: 0,
+    typeCounts: {},
+    priorityCounts: {}
+  })
+  const [announcementForm, setAnnouncementForm] = useState({
+    title: '',
+    content: '',
+    type: 'announcement',
+    priority: 'normal',
+    location: '',
+    date: '',
+    organizer: '',
+    image: '',
+    targetRoles: ['resident'],
+    isActive: true
+  })
+  const [imageUploading, setImageUploading] = useState(false)
+  const [selectedImageFile, setSelectedImageFile] = useState(null)
+  const [announcementFilters, setAnnouncementFilters] = useState({
+    type: 'all',
+    priority: 'all',
+    status: 'all',
+    search: ''
+  })
+
+  // Chat state
+  const [chatRooms, setChatRooms] = useState([])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [selectedRoomId, setSelectedRoomId] = useState(null)
+  const [messages, setMessages] = useState([])
+  const [messagesLoading, setMessagesLoading] = useState(false)
+  const [composer, setComposer] = useState('')
+  const [hasMoreMsgs, setHasMoreMsgs] = useState(false)
+  const [lastSeenByRoom, setLastSeenByRoom] = useState({})
+  const [unreadByRoom, setUnreadByRoom] = useState({})
+  const [residentsList, setResidentsList] = useState([])
+  const [fileUploading, setFileUploading] = useState(false)
+  const [selectedFile, setSelectedFile] = useState(null)
+
   // Safety check for user object
   if (!user) {
     return (
@@ -142,6 +196,22 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           setComplaints([])
         } finally {
           setComplaintsLoading(false)
+        }
+      })()
+      ;(async () => {
+        try {
+          setServiceRequestsLoading(true)
+          const res = await mongoService.listServiceRequests({ limit: 200 })
+          if (res.success) {
+            setServiceRequests(res.data || [])
+          } else {
+            setServiceRequests([])
+          }
+        } catch (e) {
+          console.error('Error loading service requests:', e)
+          setServiceRequests([])
+        } finally {
+          setServiceRequestsLoading(false)
         }
       })()
     }
@@ -223,7 +293,321 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         }
       })()
     }
+    if (currentPage === 'announcements') {
+      ;(async () => {
+        try {
+          setAnnouncementsLoading(true)
+          // Load announcements and statistics
+          const [announcementsResult, statsResult] = await Promise.all([
+            announcementService.getAnnouncements({ limit: 100 }, user.role),
+            announcementService.getAnnouncementStats(user.role)
+          ])
+          
+          if (announcementsResult.success) {
+            setAnnouncements(announcementsResult.data || [])
+          }
+          if (statsResult.success) {
+            setAnnouncementStats(statsResult.data)
+          }
+        } catch (e) {
+          console.error('Error loading announcement data:', e)
+          setAnnouncements([])
+        } finally {
+          setAnnouncementsLoading(false)
+        }
+      })()
+    }
+    if (currentPage === 'chat') {
+      ;(async () => {
+        try {
+          setChatLoading(true)
+          // Load residents list (same as resident dashboard)
+          const { residents } = await residentService.listResidents()
+          setResidentsList(residents || [])
+          
+          // Create unified community group with residents + admin
+          const allResidentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+          console.log('Admin chat: Found residents:', allResidentIds)
+          console.log('Admin chat: Admin ID:', user.id)
+          
+          // Get all admin users to include in the group
+          let adminIds = []
+          try {
+            const adminResult = await authService.getStaffUsers()
+            if (adminResult.success) {
+              adminIds = (adminResult.users || []).map(admin => admin.id).filter(Boolean)
+            }
+          } catch (e) {
+            console.log('Could not load admin users:', e)
+          }
+          
+          // Create unified community group with ALL members (residents + admins)
+          const allIds = [...allResidentIds, ...adminIds, user.id].filter((id, index, arr) => arr.indexOf(id) === index) // Remove duplicates
+          console.log('Admin chat: Creating unified community group with all IDs:', allIds)
+          if (allIds.length > 0) {
+            await chatService.createOrGetGroupRoom('Community Group', allIds)
+          }
+          
+          // Wait a moment for group creation to complete, then load rooms
+          await new Promise(resolve => setTimeout(resolve, 100))
+          
+          // Load chat rooms for admin (same as residents)
+          const { rooms } = await chatService.listRooms(user.id)
+          const rs = rooms || []
+          console.log('Admin chat: Loaded rooms:', rs)
+          
+          // Load unread counts from localStorage
+          const savedUnread = JSON.parse(localStorage.getItem('chat_unread_map') || '{}')
+          const savedLastSeen = JSON.parse(localStorage.getItem('chat_last_seen') || '{}')
+          setUnreadByRoom(savedUnread)
+          setLastSeenByRoom(savedLastSeen)
+          
+          // Compute unread counts
+          const nextUnread = { ...savedUnread }
+          rs.forEach(r => {
+            const seen = savedLastSeen[r._id]
+            if (r.lastMessageAt && (!seen || new Date(r.lastMessageAt) > new Date(seen))) {
+              nextUnread[r._id] = (nextUnread[r._id] || 0) + 1
+            }
+          })
+          setUnreadByRoom(nextUnread)
+          localStorage.setItem('chat_unread_map', JSON.stringify(nextUnread))
+          
+          setChatRooms(rs)
+          if (!selectedRoomId && (rooms || []).length > 0) {
+            // Prefer Community Group first, then any other group, then first room
+            const communityGroup = rooms.find(r => r.type === 'group' && r.name === 'Community Group')
+            const anyGroup = rooms.find(r => r.type === 'group')
+            setSelectedRoomId((communityGroup || anyGroup || rooms[0])._id)
+          }
+        } catch (e) {
+          console.error('Error loading chat data:', e)
+          setChatRooms([])
+        } finally {
+          setChatLoading(false)
+        }
+      })()
+    }
   }, [currentPage])
+
+  // Load messages for selected room
+  useEffect(() => {
+    const loadMessages = async () => {
+      if (currentPage !== 'chat' || !selectedRoomId) return
+      try {
+        setMessagesLoading(true)
+        console.log('Admin chat: Loading messages for room:', selectedRoomId)
+        const { messages } = await chatService.listMessages(selectedRoomId, undefined, 30)
+        console.log('Admin chat: Loaded messages:', messages)
+        setMessages(messages || [])
+        setHasMoreMsgs((messages || []).length === 30)
+      } catch (e) {
+        console.error('Error loading messages:', e)
+        setMessages([])
+      } finally {
+        setMessagesLoading(false)
+      }
+    }
+    loadMessages()
+  }, [currentPage, selectedRoomId])
+
+  // Periodically check if Community Group exists
+  useEffect(() => {
+    if (currentPage === 'chat' && user?.id) {
+      const checkCommunityGroup = async () => {
+        const communityGroup = (chatRooms || []).find(r => r.type === 'group' && r.name === 'Community Group')
+        if (!communityGroup) {
+          console.log('Admin: Community Group not found, ensuring it exists...')
+          await ensureCommunityGroup()
+          // Reload rooms after ensuring group exists
+          const { rooms } = await chatService.listRooms(user.id)
+          setChatRooms(rooms || [])
+        }
+      }
+
+      // Check every 5 seconds if Community Group is missing
+      const interval = setInterval(checkCommunityGroup, 5000)
+      return () => clearInterval(interval)
+    }
+  }, [currentPage, user?.id, chatRooms])
+
+  // Helper functions for chat
+  const hashToPalette = (id) => {
+    const colors = [
+      'bg-gradient-to-br from-blue-500 to-blue-600',
+      'bg-gradient-to-br from-green-500 to-green-600',
+      'bg-gradient-to-br from-purple-500 to-purple-600',
+      'bg-gradient-to-br from-pink-500 to-pink-600',
+      'bg-gradient-to-br from-indigo-500 to-indigo-600',
+      'bg-gradient-to-br from-red-500 to-red-600',
+      'bg-gradient-to-br from-yellow-500 to-yellow-600',
+      'bg-gradient-to-br from-teal-500 to-teal-600'
+    ]
+    const hash = id.split('').reduce((a, b) => {
+      a = ((a << 5) - a) + b.charCodeAt(0)
+      return a & a
+    }, 0)
+    return colors[Math.abs(hash) % colors.length]
+  }
+
+  const getDisplayForUserId = (uid) => {
+    const resident = residentsList.find(r => r.authUserId === uid)
+    const userInfo = resident || { name: 'Unknown', email: uid }
+    const name = userInfo.name || userInfo.email || uid
+    const initials = name.slice(0, 2).toUpperCase()
+    const bg = hashToPalette(uid)
+    return { name, initials, bg }
+  }
+
+  const loadMoreMessages = async () => {
+    if (!hasMoreMsgs || messagesLoading || messages.length === 0) return
+    try {
+      setMessagesLoading(true)
+      const oldest = messages[0]
+      const { messages: older } = await chatService.listMessages(selectedRoomId, oldest.createdAt, 30)
+      setMessages([...(older || []), ...messages])
+      setHasMoreMsgs((older || []).length === 30)
+    } catch (e) {
+      console.error('Error loading more messages:', e)
+    } finally {
+      setMessagesLoading(false)
+    }
+  }
+
+  // Ensure Community Group exists
+  const ensureCommunityGroup = async () => {
+    try {
+      const { residents } = await residentService.listResidents()
+      const allResidentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+      
+      // Get all admin users
+      let adminIds = []
+      try {
+        const adminResult = await authService.getStaffUsers()
+        if (adminResult.success) {
+          adminIds = (adminResult.users || []).map(admin => admin.id).filter(Boolean)
+        }
+      } catch (e) {
+        console.log('Could not load admin users:', e)
+      }
+      
+      const allIds = [...allResidentIds, ...adminIds, user.id].filter((id, index, arr) => arr.indexOf(id) === index)
+      console.log('Admin: Ensuring Community Group exists with IDs:', allIds)
+      await chatService.createOrGetGroupRoom('Community Group', allIds)
+      return true
+    } catch (e) {
+      console.error('Error ensuring Community Group:', e)
+      return false
+    }
+  }
+
+
+  const sendTextMessage = async () => {
+    if (!composer.trim()) return
+    try {
+      const text = composer.trim()
+      setComposer('')
+      const optimistic = {
+        _id: 'tmp_' + Date.now(),
+        roomId: selectedRoomId,
+        senderAuthUserId: user.id,
+        senderName: user.name || 'Admin',
+        text,
+        createdAt: new Date().toISOString()
+      }
+      setMessages([...messages, optimistic])
+      const { message } = await chatService.sendMessage({ 
+        roomId: selectedRoomId, 
+        senderAuthUserId: user.id, 
+        senderName: user.name || 'Admin', 
+        text 
+      })
+      setMessages(prev => prev.map(m => m._id === optimistic._id ? message : m))
+      // refresh rooms order
+      const { rooms } = await chatService.listRooms(user.id)
+      setChatRooms(rooms || [])
+    } catch (e) {
+      console.error('Error sending message:', e)
+      showError('Failed to send message', 'Please check your connection and try again.')
+    }
+  }
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    if (!chatFileService.isSupportedFileType(file.type)) {
+      showError('Unsupported file type', 'Please select an image, video, PDF, or document file.')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) { // 10MB limit
+      showError('File too large', 'Please select a file smaller than 10MB.')
+      return
+    }
+
+    setSelectedFile(file)
+  }
+
+  const sendFileMessage = async () => {
+    if (!selectedFile || !selectedRoomId) return
+    
+    try {
+      setFileUploading(true)
+      const room = (chatRooms || []).find(r => r._id === selectedRoomId)
+      if (!room) return
+
+      // Upload file
+      const uploadResult = await chatFileService.uploadChatFile(selectedFile)
+      if (!uploadResult.success) {
+        showError('Upload failed', uploadResult.error)
+        return
+      }
+
+      // Send file message
+      await chatService.sendFileMessage(
+        selectedRoomId,
+        user.id,
+        user.name || user.email || 'Admin',
+        uploadResult.data,
+        composer.trim() || ''
+      )
+
+      // Clear file and composer
+      setSelectedFile(null)
+      setComposer('')
+      
+      // Refresh messages
+      const { messages } = await chatService.listMessages(selectedRoomId, undefined, 30)
+      setMessages(messages || [])
+      
+      // Update room list
+      const { rooms } = await chatService.listRooms(user.id)
+      setChatRooms(rooms || [])
+      
+      showSuccess('File sent successfully!')
+    } catch (e) {
+      console.error('Error sending file:', e)
+      showError('Failed to send file', 'Please try again.')
+    } finally {
+      setFileUploading(false)
+    }
+  }
+
+  const removeSelectedFile = () => {
+    setSelectedFile(null)
+  }
+
+  const markRoomSeen = (roomId) => {
+    const nextSeen = { ...lastSeenByRoom, [roomId]: new Date().toISOString() }
+    setLastSeenByRoom(nextSeen)
+    localStorage.setItem('chat_last_seen', JSON.stringify(nextSeen))
+    if (unreadByRoom[roomId]) {
+      const nextUnread = { ...unreadByRoom, [roomId]: 0 }
+      setUnreadByRoom(nextUnread)
+      localStorage.setItem('chat_unread_map', JSON.stringify(nextUnread))
+    }
+  }
 
   // Password validation function
   const validatePassword = (password) => {
@@ -714,6 +1098,217 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     }
   }
 
+  // Image Upload Handler
+  const handleImageUpload = async (file) => {
+    try {
+      setImageUploading(true)
+      const result = await announcementService.uploadAnnouncementImage(file)
+      
+      if (result.success) {
+        setAnnouncementForm({...announcementForm, image: result.data.publicUrl})
+        setSelectedImageFile(file)
+        showSuccess('Image Uploaded Successfully!', 'The image has been uploaded and is ready to use.')
+      } else {
+        showError('Image Upload Failed', result.error || 'Please try again with a different image.')
+      }
+    } catch (error) {
+      console.error('Error uploading image:', error)
+      showError('Image Upload Error', 'Failed to upload image. Please try again.')
+    } finally {
+      setImageUploading(false)
+    }
+  }
+
+  const handleImageFileSelect = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      handleImageUpload(file)
+    }
+  }
+
+  const removeImage = () => {
+    setAnnouncementForm({...announcementForm, image: ''})
+    setSelectedImageFile(null)
+  }
+
+  const handleAnnouncementClick = (announcement) => {
+    setSelectedAnnouncement(announcement)
+    setAnnouncementView('details')
+  }
+
+  // Announcement Management Functions
+  const handleCreateAnnouncement = async (e) => {
+    e.preventDefault()
+    
+    if (!announcementForm.title || !announcementForm.content || announcementForm.targetRoles.length === 0) {
+      showError('Missing Required Information', 'Please fill in all required fields and select at least one target role.')
+      return
+    }
+
+    try {
+      setAnnouncementsLoading(true)
+      
+      const announcementData = {
+        title: announcementForm.title,
+        content: announcementForm.content,
+        type: announcementForm.type,
+        priority: announcementForm.priority,
+        location: announcementForm.location || null,
+        date: announcementForm.date || null,
+        organizer: announcementForm.organizer || null,
+        image: announcementForm.image || null,
+        targetRoles: announcementForm.targetRoles,
+        isActive: announcementForm.isActive
+      }
+
+      const result = await announcementService.createAnnouncement(announcementData, user.role, user)
+      
+      if (result.success) {
+        showSuccess('Announcement Created Successfully!', 'The announcement has been created and published.')
+        setAnnouncementForm({
+          title: '',
+          content: '',
+          type: 'announcement',
+          priority: 'normal',
+          location: '',
+          date: '',
+          organizer: '',
+          image: '',
+          targetRoles: ['resident'],
+          isActive: true
+        })
+        setSelectedImageFile(null)
+        setAnnouncementView('list')
+        
+        // Reload data
+        const [announcementsResult, statsResult] = await Promise.all([
+          announcementService.getAnnouncements({ limit: 100 }, user.role),
+          announcementService.getAnnouncementStats(user.role)
+        ])
+        
+        if (announcementsResult.success) setAnnouncements(announcementsResult.data || [])
+        if (statsResult.success) setAnnouncementStats(statsResult.data)
+      } else {
+        showError('Failed to Create Announcement', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error creating announcement:', error)
+      showError('Error Creating Announcement', error.message || 'Please check your connection and try again.')
+    } finally {
+      setAnnouncementsLoading(false)
+    }
+  }
+
+  const handleUpdateAnnouncement = async (e) => {
+    e.preventDefault()
+    
+    if (!selectedAnnouncement) return
+
+    try {
+      setAnnouncementsLoading(true)
+      
+      const updateData = {
+        title: announcementForm.title,
+        content: announcementForm.content,
+        type: announcementForm.type,
+        priority: announcementForm.priority,
+        location: announcementForm.location || null,
+        date: announcementForm.date || null,
+        organizer: announcementForm.organizer || null,
+        image: announcementForm.image || null,
+        targetRoles: announcementForm.targetRoles,
+        isActive: announcementForm.isActive
+      }
+
+      const result = await announcementService.updateAnnouncement(selectedAnnouncement._id, updateData, user.role)
+      
+      if (result.success) {
+        showSuccess('Announcement Updated Successfully!', 'The announcement has been updated.')
+        setAnnouncementView('list')
+        setSelectedAnnouncement(null)
+        
+        // Reload data
+        const [announcementsResult, statsResult] = await Promise.all([
+          announcementService.getAnnouncements({ limit: 100 }, user.role),
+          announcementService.getAnnouncementStats(user.role)
+        ])
+        
+        if (announcementsResult.success) setAnnouncements(announcementsResult.data || [])
+        if (statsResult.success) setAnnouncementStats(statsResult.data)
+      } else {
+        showError('Failed to Update Announcement', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error updating announcement:', error)
+      showError('Error Updating Announcement', error.message || 'Please try again later.')
+    } finally {
+      setAnnouncementsLoading(false)
+    }
+  }
+
+  const handleDeleteAnnouncement = async (announcementId) => {
+    if (!confirm('Are you sure you want to delete this announcement? This action cannot be undone.')) {
+      return
+    }
+
+    try {
+      setAnnouncementsLoading(true)
+      const result = await announcementService.deleteAnnouncement(announcementId, user.role)
+      
+      if (result.success) {
+        showSuccess('Announcement Deleted Successfully!', 'The announcement has been removed.')
+        
+        // Reload data
+        const [announcementsResult, statsResult] = await Promise.all([
+          announcementService.getAnnouncements({ limit: 100 }, user.role),
+          announcementService.getAnnouncementStats(user.role)
+        ])
+        
+        if (announcementsResult.success) setAnnouncements(announcementsResult.data || [])
+        if (statsResult.success) setAnnouncementStats(statsResult.data)
+      } else {
+        showError('Failed to Delete Announcement', result.error || 'Please try again later.')
+      }
+    } catch (error) {
+      console.error('Error deleting announcement:', error)
+      showError('Error Deleting Announcement', error.message || 'Please try again later.')
+    } finally {
+      setAnnouncementsLoading(false)
+    }
+  }
+
+  const handleEditAnnouncement = (announcement) => {
+    setSelectedAnnouncement(announcement)
+    setAnnouncementForm({
+      title: announcement.title,
+      content: announcement.content,
+      type: announcement.type,
+      priority: announcement.priority,
+      location: announcement.location || '',
+      date: announcement.date ? announcement.date.split('T')[0] : '',
+      organizer: announcement.organizer || '',
+      image: announcement.image || '',
+      targetRoles: announcement.targetRoles || ['resident'],
+      isActive: announcement.isActive !== false
+    })
+    setAnnouncementView('edit')
+  }
+
+  // Filter announcements
+  const filteredAnnouncements = announcements.filter(announcement => {
+    const matchesType = announcementFilters.type === 'all' || announcement.type === announcementFilters.type
+    const matchesPriority = announcementFilters.priority === 'all' || announcement.priority === announcementFilters.priority
+    const matchesStatus = announcementFilters.status === 'all' || 
+      (announcementFilters.status === 'active' ? announcement.isActive : !announcement.isActive)
+    const matchesSearch = !announcementFilters.search || 
+      announcement.title.toLowerCase().includes(announcementFilters.search.toLowerCase()) ||
+      announcement.content?.toLowerCase().includes(announcementFilters.search.toLowerCase()) ||
+      announcement.organizer?.toLowerCase().includes(announcementFilters.search.toLowerCase()) ||
+      announcement.location?.toLowerCase().includes(announcementFilters.search.toLowerCase())
+    
+    return matchesType && matchesPriority && matchesStatus && matchesSearch
+  })
+
 
 
 
@@ -1118,6 +1713,25 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       )
     }
 
+    if (currentPage === 'add-residents') {
+      return (
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Add Residents</h3>
+              <button onClick={async ()=>{
+                if (!confirm('Delete ALL resident users from MongoDB? This cannot be undone.')) return
+                const res = await mongoService.deleteAllResidents()
+                if (res.success) alert('All residents deleted')
+                else alert('Delete failed: '+ (res.error||'Unknown'))
+              }} className="px-3 py-2 bg-red-600 text-white rounded-lg">Delete All Residents</button>
+            </div>
+            <AdminAddResidents />
+          </div>
+        </div>
+      )
+    }
+
     // Route other admin sidebar pages to simple views for now
     if (currentPage === 'payments') {
       return (
@@ -1133,9 +1747,890 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     if (currentPage === 'announcements') {
       return (
         <div className="space-y-6">
+          {/* Announcement Statistics */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <Bell className="w-8 h-8 text-blue-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{announcementStats.totalAnnouncements}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Total Announcements</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <Bell className="w-8 h-8 text-green-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{announcementStats.activeAnnouncements}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Active</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-orange-50 dark:bg-orange-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <Bell className="w-8 h-8 text-orange-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{announcementStats.typeCounts.announcement || 0}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Announcements</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-purple-50 dark:bg-purple-900/20 p-6 rounded-lg">
+              <div className="flex items-center gap-3">
+                <Bell className="w-8 h-8 text-purple-600" />
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{announcementStats.typeCounts.event || 0}</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Events</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Announcement Management Interface */}
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-            <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Announcements</h3>
-            <p className="text-gray-600 dark:text-gray-400">Manage community announcements (coming soon).</p>
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                {announcementView !== 'list' && (
+                  <button
+                    onClick={() => {
+                      setAnnouncementView('list')
+                      setSelectedAnnouncement(null)
+                      setAnnouncementForm({
+                        title: '',
+                        content: '',
+                        type: 'announcement',
+                        priority: 'normal',
+                        location: '',
+                        date: '',
+                        organizer: '',
+                        image: '',
+                        targetRoles: ['resident'],
+                        isActive: true
+                      })
+                    }}
+                    className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                    Back to Announcements
+                  </button>
+                )}
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  {announcementView === 'list' ? 'Announcement Management' :
+                   announcementView === 'create' ? 'Create New Announcement' :
+                   announcementView === 'edit' ? 'Edit Announcement' : 'Announcement Details'}
+                </h3>
+              </div>
+              {announcementView === 'list' && (
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setAnnouncementsLoading(true)
+                      Promise.all([
+                        announcementService.getAnnouncements({ limit: 100 }, user.role),
+                        announcementService.getAnnouncementStats(user.role)
+                      ]).then(([announcementsResult, statsResult]) => {
+                        if (announcementsResult.success) setAnnouncements(announcementsResult.data || [])
+                        if (statsResult.success) setAnnouncementStats(statsResult.data)
+                      }).finally(() => setAnnouncementsLoading(false))
+                    }}
+                    className="flex items-center gap-2 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+                    disabled={announcementsLoading}
+                  >
+                    🔄 {announcementsLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                  <button
+                    onClick={() => setAnnouncementView('create')}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Plus className="w-5 h-5" />
+                    Create Announcement
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Announcement List View */}
+            {announcementView === 'list' && (
+              <div className="space-y-6">
+                {/* Filters */}
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                    <input
+                      type="text"
+                      placeholder="Search announcements..."
+                      value={announcementFilters.search}
+                      onChange={(e) => setAnnouncementFilters({...announcementFilters, search: e.target.value})}
+                      className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <select
+                    value={announcementFilters.type}
+                    onChange={(e) => setAnnouncementFilters({...announcementFilters, type: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="announcement">Announcements</option>
+                    <option value="event">Events</option>
+                    <option value="festival">Festivals</option>
+                    <option value="maintenance">Maintenance</option>
+                  </select>
+                  <select
+                    value={announcementFilters.priority}
+                    onChange={(e) => setAnnouncementFilters({...announcementFilters, priority: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">All Priorities</option>
+                    <option value="low">Low</option>
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                  </select>
+                  <select
+                    value={announcementFilters.status}
+                    onChange={(e) => setAnnouncementFilters({...announcementFilters, status: e.target.value})}
+                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </div>
+
+                {/* Announcements List */}
+                {announcementsLoading ? (
+                  <div className="text-center py-8">
+                    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <p className="text-gray-600 dark:text-gray-400">Loading announcements...</p>
+                  </div>
+                ) : filteredAnnouncements.length === 0 ? (
+                  <div className="text-center py-8">
+                    <Bell className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600 dark:text-gray-400">No announcements found</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {filteredAnnouncements.map((announcement) => (
+                      <div key={announcement._id} className="border border-gray-200 dark:border-gray-700 rounded-lg hover:shadow-md transition-shadow cursor-pointer" onClick={() => handleAnnouncementClick(announcement)}>
+                        <div className="flex">
+                          {/* Left side - Details */}
+                          <div className="flex-1 p-6">
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h4 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                    {announcement.title}
+                                  </h4>
+                                </div>
+                                
+                                <div className="flex items-center gap-3 mb-3">
+                                  <span className={`px-2 py-1 text-xs rounded ${
+                                    announcement.type === 'announcement' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                                    announcement.type === 'event' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' :
+                                    announcement.type === 'festival' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200' :
+                                    'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
+                                  }`}>
+                                    {announcement.type}
+                                  </span>
+                                  <span className={`px-2 py-1 text-xs rounded ${
+                                    announcement.priority === 'urgent' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
+                                    announcement.priority === 'high' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200' :
+                                    announcement.priority === 'normal' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                                    'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                                  }`}>
+                                    {announcement.priority}
+                                  </span>
+                                  <span className={`px-2 py-1 text-xs rounded ${
+                                    announcement.isActive ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                                  }`}>
+                                    {announcement.isActive ? 'Active' : 'Inactive'}
+                                  </span>
+                                </div>
+                              </div>
+                              
+                              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={() => handleEditAnnouncement(announcement)}
+                                  className="p-2 text-gray-600 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg transition-colors"
+                                  title="Edit"
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteAnnouncement(announcement._id)}
+                                  className="p-2 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                            
+                            <p className="text-gray-600 dark:text-gray-400 mb-4 leading-relaxed">
+                              {announcement.content}
+                            </p>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                              <div className="flex items-center gap-2">
+                                <Calendar className="w-4 h-4 text-gray-400" />
+                                <span className="text-gray-600 dark:text-gray-400">
+                                  {announcement.date ? new Date(announcement.date).toLocaleDateString() : 'No date set'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <MapPin className="w-4 h-4 text-gray-400" />
+                                <span className="text-gray-600 dark:text-gray-400">{announcement.location || 'No location'}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <User className="w-4 h-4 text-gray-400" />
+                                <span className="text-gray-600 dark:text-gray-400">{announcement.organizer || 'No organizer'}</span>
+                              </div>
+                            </div>
+                            
+                            <div className="mt-3 text-xs text-gray-500 dark:text-gray-500">
+                              Created: {new Date(announcement.createdAt).toLocaleString()} | 
+                              Target: {announcement.targetRoles?.join(', ') || 'All roles'}
+                            </div>
+                          </div>
+                          
+                          {/* Right side - Image */}
+                          {announcement.image && (
+                            <div className="w-48 h-48 flex-shrink-0 p-4">
+                              <img
+                                src={announcement.image}
+                                alt={announcement.title}
+                                className="w-full h-full object-cover rounded-lg shadow-sm"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Create/Edit Announcement Form */}
+            {(announcementView === 'create' || announcementView === 'edit') && (
+              <form onSubmit={announcementView === 'create' ? handleCreateAnnouncement : handleUpdateAnnouncement} className="space-y-6">
+                {/* Basic Information */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Title *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={announcementForm.title}
+                      onChange={(e) => setAnnouncementForm({...announcementForm, title: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      placeholder="Enter announcement title"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Type *
+                    </label>
+                    <select
+                      required
+                      value={announcementForm.type}
+                      onChange={(e) => setAnnouncementForm({...announcementForm, type: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="announcement">Announcement</option>
+                      <option value="event">Event</option>
+                      <option value="festival">Festival</option>
+                      <option value="maintenance">Maintenance</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Priority *
+                    </label>
+                    <select
+                      required
+                      value={announcementForm.priority}
+                      onChange={(e) => setAnnouncementForm({...announcementForm, priority: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="low">Low</option>
+                      <option value="normal">Normal</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Location
+                    </label>
+                    <input
+                      type="text"
+                      value={announcementForm.location}
+                      onChange={(e) => setAnnouncementForm({...announcementForm, location: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      placeholder="Enter location (optional)"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Event Date
+                    </label>
+                    <input
+                      type="date"
+                      value={announcementForm.date}
+                      onChange={(e) => setAnnouncementForm({...announcementForm, date: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Organizer
+                    </label>
+                    <input
+                      type="text"
+                      value={announcementForm.organizer}
+                      onChange={(e) => setAnnouncementForm({...announcementForm, organizer: e.target.value})}
+                      className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      placeholder="Enter organizer name (optional)"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Content *
+                  </label>
+                  <textarea
+                    required
+                    value={announcementForm.content}
+                    onChange={(e) => setAnnouncementForm({...announcementForm, content: e.target.value})}
+                    rows={6}
+                    className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    placeholder="Enter announcement content"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Image Upload
+                  </label>
+                  
+                  {/* Image Preview */}
+                  {announcementForm.image && (
+                    <div className="mb-4">
+                      <img
+                        src={announcementForm.image}
+                        alt="Announcement preview"
+                        className="w-full h-48 object-cover rounded-lg border border-gray-300 dark:border-gray-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={removeImage}
+                        className="mt-2 px-3 py-1 text-sm text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
+                      >
+                        Remove Image
+                      </button>
+                    </div>
+                  )}
+
+                  {/* File Upload Input */}
+                  <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center hover:border-gray-400 dark:hover:border-gray-500 transition-colors">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageFileSelect}
+                      className="hidden"
+                      id="image-upload"
+                      disabled={imageUploading}
+                    />
+                    <label
+                      htmlFor="image-upload"
+                      className={`cursor-pointer ${imageUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      {imageUploading ? (
+                        <div className="flex flex-col items-center">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">Uploading image...</p>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center">
+                          <svg className="w-12 h-12 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                          </svg>
+                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                            Click to upload an image
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
+                            PNG, JPG, GIF up to 5MB
+                          </p>
+                        </div>
+                      )}
+                    </label>
+                  </div>
+                </div>
+
+                {/* Target Roles */}
+                <div className="border-t pt-6">
+                  <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Target Audience</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {['resident', 'staff', 'security'].map((role) => (
+                      <label key={role} className="flex items-center gap-2 p-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={announcementForm.targetRoles.includes(role)}
+                          onChange={(e) => {
+                            const newRoles = e.target.checked
+                              ? [...announcementForm.targetRoles, role]
+                              : announcementForm.targetRoles.filter(r => r !== role)
+                            setAnnouncementForm({...announcementForm, targetRoles: newRoles})
+                          }}
+                          className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-900 dark:text-white capitalize">{role}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Active Status */}
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    id="isActive"
+                    checked={announcementForm.isActive}
+                    onChange={(e) => setAnnouncementForm({...announcementForm, isActive: e.target.checked})}
+                    className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <label htmlFor="isActive" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Publish announcement (make it visible to residents)
+                  </label>
+                </div>
+
+                {/* Submit Buttons */}
+                <div className="flex justify-end gap-3 pt-6">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAnnouncementView('list')
+                      setSelectedAnnouncement(null)
+                    }}
+                    className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={announcementsLoading}
+                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {announcementsLoading ? 'Processing...' : announcementView === 'create' ? 'Create Announcement' : 'Update Announcement'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Announcement Details View */}
+            {announcementView === 'details' && selectedAnnouncement && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* Announcement Information */}
+                  <div>
+                    <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Announcement Information</h4>
+                    <div className="space-y-3">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Title:</span>
+                        <span className="font-medium text-gray-900 dark:text-white">{selectedAnnouncement.title}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Type:</span>
+                        <span className="font-medium text-gray-900 dark:text-white capitalize">{selectedAnnouncement.type}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Priority:</span>
+                        <span className="font-medium text-gray-900 dark:text-white capitalize">{selectedAnnouncement.priority}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Status:</span>
+                        <span className={`font-medium capitalize ${selectedAnnouncement.isActive ? 'text-green-600' : 'text-gray-600'}`}>
+                          {selectedAnnouncement.isActive ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                      {selectedAnnouncement.organizer && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600 dark:text-gray-400">Organizer:</span>
+                          <span className="font-medium text-gray-900 dark:text-white">{selectedAnnouncement.organizer}</span>
+                        </div>
+                      )}
+                      {selectedAnnouncement.location && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600 dark:text-gray-400">Location:</span>
+                          <span className="font-medium text-gray-900 dark:text-white">{selectedAnnouncement.location}</span>
+                        </div>
+                      )}
+                      {selectedAnnouncement.date && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600 dark:text-gray-400">Date:</span>
+                          <span className="font-medium text-gray-900 dark:text-white">{new Date(selectedAnnouncement.date).toLocaleDateString()}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Created:</span>
+                        <span className="font-medium text-gray-900 dark:text-white">{new Date(selectedAnnouncement.createdAt).toLocaleString()}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-600 dark:text-gray-400">Content:</span>
+                        <p className="mt-1 text-gray-900 dark:text-white">{selectedAnnouncement.content}</p>
+                      </div>
+                      {selectedAnnouncement.targetRoles && (
+                        <div>
+                          <span className="text-gray-600 dark:text-gray-400">Target Audience:</span>
+                          <p className="mt-1 text-gray-900 dark:text-white">{selectedAnnouncement.targetRoles.join(', ')}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Image Preview */}
+                  {selectedAnnouncement.image && (
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Image Preview</h4>
+                      <div className="border rounded-lg overflow-hidden">
+                        <img 
+                          src={selectedAnnouncement.image} 
+                          alt="Announcement" 
+                          className="w-full h-auto max-h-96 object-contain bg-gray-50 dark:bg-gray-700"
+                          onError={(e) => {
+                            e.target.style.display = 'none'
+                            e.target.nextSibling.style.display = 'block'
+                          }}
+                        />
+                        <div className="hidden p-8 text-center text-gray-500 dark:text-gray-400">
+                          <p>Unable to load image</p>
+                          <a href={selectedAnnouncement.image} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Open in new tab</a>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-4 pt-6 border-t border-gray-200 dark:border-gray-700">
+                  <button
+                    onClick={() => handleEditAnnouncement(selectedAnnouncement)}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Edit className="w-4 h-4" />
+                    Edit Announcement
+                  </button>
+                  <button
+                    onClick={() => handleDeleteAnnouncement(selectedAnnouncement._id)}
+                    className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete Announcement
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )
+    }
+
+    if (currentPage === 'chat') {
+      return (
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Admin Chat</h3>
+              <div className="flex gap-2">
+                <button onClick={async () => {
+                  try {
+                    setChatLoading(true)
+                    const { rooms } = await chatService.listRooms(user.id)
+                    console.log('Manual refresh - Loaded rooms:', rooms)
+                    setChatRooms(rooms || [])
+                  } catch (e) {
+                    console.error('Manual refresh error:', e)
+                  } finally {
+                    setChatLoading(false)
+                  }
+                }} className="px-3 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors">
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Residents / Rooms */}
+              <div className="lg:col-span-1 border dark:border-gray-700 rounded-lg overflow-hidden">
+                <div className="p-3 border-b dark:border-gray-700 flex items-center justify-between">
+                  <span className="font-medium text-gray-900 dark:text-white">Community Members</span>
+                  <div className="flex items-center gap-2">
+                    {chatLoading && <span className="text-xs text-gray-500">Loading…</span>}
+                    <button onClick={async () => {
+                      try {
+                        setChatLoading(true)
+                        // Force create Community Group
+                        const { residents } = await residentService.listResidents()
+                        const allResidentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+                        
+                        // Get all admin users
+                        let adminIds = []
+                        try {
+                          const adminResult = await authService.getStaffUsers()
+                          if (adminResult.success) {
+                            adminIds = (adminResult.users || []).map(admin => admin.id).filter(Boolean)
+                          }
+                        } catch (e) {
+                          console.log('Could not load admin users:', e)
+                        }
+                        
+                        const allIds = [...allResidentIds, ...adminIds, user.id].filter((id, index, arr) => arr.indexOf(id) === index)
+                        console.log('Admin manual refresh: Creating Community Group with IDs:', allIds)
+                        await chatService.createOrGetGroupRoom('Community Group', allIds)
+                        
+                        // Reload rooms
+                        const { rooms } = await chatService.listRooms(user.id)
+                        console.log('Admin manual refresh - Loaded rooms:', rooms)
+                        setChatRooms(rooms || [])
+                        
+                        // Auto-select Community Group if available
+                        const communityGroup = rooms?.find(r => r.type === 'group' && r.name === 'Community Group')
+                        if (communityGroup) {
+                          setSelectedRoomId(communityGroup._id)
+                        }
+                      } catch (e) {
+                        console.error('Admin manual refresh error:', e)
+                      } finally {
+                        setChatLoading(false)
+                      }
+                    }} className="text-xs px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-[60vh] overflow-auto">
+                  {/* Group item */}
+                  {(() => {
+                    const group = (chatRooms || []).find(r => r.type === 'group' && r.name === 'Community Group')
+                    if (!group) {
+                      console.log('Admin chat: No Community Group found in chatRooms')
+                      return (
+                        <div className="p-3 border-b dark:border-gray-700 bg-yellow-50 dark:bg-yellow-900/20">
+                          <div className="text-xs text-yellow-800 dark:text-yellow-200">
+                            Community Group not found. Click Refresh to create it.
+                          </div>
+                        </div>
+                      )
+                    }
+                    return (
+                      <button key={group._id} onClick={() => setSelectedRoomId(group._id)} className={`w-full text-left p-3 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 ${selectedRoomId === group._id ? 'bg-gray-50 dark:bg-gray-700' : ''}`}>
+                        <div className="text-sm text-gray-900 dark:text-white truncate">{group.name || 'Community Group'}</div>
+                        <div className="text-xs text-gray-500">{new Date(group.lastMessageAt).toLocaleString?.() || ''}</div>
+                      </button>
+                    )
+                  })()}
+                  {/* Residents list for DM */}
+                  {(residentsList || []).filter(r => r.authUserId !== user.id).map(r => (
+                    <button key={r.authUserId} onClick={async () => {
+                      try {
+                        const { room } = await chatService.createOrGetDmRoom([user.id, r.authUserId])
+                        setSelectedRoomId(room._id)
+                        const { rooms } = await chatService.listRooms(user.id)
+                        setChatRooms(rooms || [])
+                      } catch (e) { 
+                        console.error(e); 
+                        showError('Failed to Open Chat', 'Please try again later.') 
+                      }
+                    }} className={`w-full text-left p-3 border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 ${selectedRoomId && (chatRooms.find(rr => rr._id === selectedRoomId)?.memberAuthUserIds || []).includes(r.authUserId) ? 'bg-gray-50 dark:bg-gray-700' : ''}`}>
+                      <div className="text-sm text-gray-900 dark:text-white truncate">{r.name || r.email || r.authUserId}</div>
+                      <div className="text-xs text-gray-500 truncate">{r.authUserId}</div>
+                    </button>
+                  ))}
+                  {(residentsList || []).length === 0 && (
+                    <p className="p-3 text-sm text-gray-600 dark:text-gray-400">No residents found.</p>
+                  )}
+                </div>
+              </div>
+              
+              {/* Messages */}
+              <div className="lg:col-span-2 border dark:border-gray-700 rounded-xl flex flex-col min-h-[70vh] bg-white dark:bg-gray-800">
+                {/* Chat header with avatar and name */}
+                <div className="px-4 py-3 border-b dark:border-gray-700 flex items-center gap-3">
+                  {(() => {
+                    const room = (chatRooms || []).find(r => r._id === selectedRoomId)
+                    console.log('Admin chat: Selected room:', room)
+                    let label = 'Select a chat'
+                    if (room) {
+                      if (room.type === 'group') {
+                        label = room.name || 'Community Group'
+                        console.log('Admin chat: Group room members:', room.memberAuthUserIds)
+                      } else {
+                        const otherId = (room.memberAuthUserIds || []).find(x => x !== user.id)
+                        const other = getDisplayForUserId(otherId)
+                        label = other?.name || other?.email || otherId || 'Resident'
+                      }
+                    }
+                    const initials = (label || 'R').slice(0, 2).toUpperCase()
+                    return (
+                      <>
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white flex items-center justify-center text-sm font-semibold">{initials}</div>
+                        <div className="flex flex-col">
+                          <div className="text-sm font-medium text-gray-900 dark:text-white">{label}</div>
+                          <div className="text-[11px] text-gray-500">WhatsApp-like chat</div>
+                        </div>
+                      </>
+                    )
+                  })()}
+                  <div className="ml-auto">
+                    <button onClick={loadMoreMessages} disabled={!hasMoreMsgs || messagesLoading} className="text-xs px-2 py-1 border rounded-lg dark:border-gray-600">Load older</button>
+                  </div>
+                </div>
+                
+                <div 
+                  className="flex-1 overflow-auto p-4 space-y-2 bg-[url('data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'20\' height=\'20\'><rect fill=\'%23f8fafc\' width=\'20\' height=\'20\'/><circle cx=\'10\' cy=\'10\' r=\'1\' fill=\'%23e5e7eb\'/></svg>')] dark:bg-gray-900" 
+                  onScroll={() => markRoomSeen(selectedRoomId)}
+                >
+                  {(messages || []).map(m => {
+                    const mine = m.senderAuthUserId === user.id
+                    const { name, initials, bg } = getDisplayForUserId(m.senderAuthUserId)
+                    return (
+                      <div key={m._id} className={`flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'}`}>
+                        {!mine && (
+                          <div className={`w-7 h-7 rounded-full ${bg} text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0`}>{initials}</div>
+                        )}
+                        <div className={`max-w-[75%] ${mine ? 'text-right' : 'text-left'}`}>
+                          {!mine && <div className="text-[10px] text-gray-500 mb-0.5">{name}</div>}
+                          <div className={`px-3 py-2 rounded-2xl shadow ${mine ? 'bg-gradient-to-br from-blue-600 to-blue-500 text-white rounded-tr-none ml-auto' : 'bg-gray-100 dark:bg-gray-700 dark:text-white rounded-tl-none'}`}>
+                            {m.text && <div className="whitespace-pre-wrap text-[13px] leading-relaxed">{m.text}</div>}
+                            {m.media && (
+                              <div className="mt-2">
+                                {m.media.type === 'image' && (
+                                  <img 
+                                    src={m.media.publicUrl || m.media.path} 
+                                    alt={m.media.originalName || 'Image'} 
+                                    className="max-w-full h-auto rounded-lg cursor-pointer"
+                                    onClick={() => window.open(m.media.publicUrl || m.media.path, '_blank')}
+                                  />
+                                )}
+                                {m.media.type === 'video' && (
+                                  <video 
+                                    src={m.media.publicUrl || m.media.path} 
+                                    controls 
+                                    className="max-w-full h-auto rounded-lg"
+                                  >
+                                    Your browser does not support the video tag.
+                                  </video>
+                                )}
+                                {(m.media.type === 'pdf' || m.media.type === 'document') && (
+                                  <div className="flex items-center gap-2 p-2 bg-gray-200 dark:bg-gray-600 rounded-lg">
+                                    <span className="text-lg">{chatFileService.getFileIcon(m.media.type)}</span>
+                                    <div className="flex-1">
+                                      <div className="text-sm font-medium">{m.media.originalName || 'Document'}</div>
+                                      <div className="text-xs text-gray-500">{chatFileService.formatFileSize(m.media.size)}</div>
+                                    </div>
+                                    <a 
+                                      href={m.media.publicUrl || m.media.path} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer"
+                                      className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+                                    >
+                                      Open
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <div className={`text-[10px] text-gray-500 mt-1 ${mine ? '' : ''}`}>
+                            {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                        {mine && (
+                          <div className={`w-7 h-7 rounded-full ${hashToPalette(user.id)} text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0`}>
+                            {(user.name || 'Admin').slice(0, 2).toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                  {messagesLoading && (
+                    <div className="flex justify-center py-4">
+                      <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="p-3 border-t dark:border-gray-700 bg-white dark:bg-gray-800 rounded-b-xl">
+                  {/* Selected file preview */}
+                  {selectedFile && (
+                    <div className="mb-3 p-2 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center gap-2">
+                      <span className="text-lg">{chatFileService.getFileIcon(chatFileService.getFileType(selectedFile.type))}</span>
+                      <div className="flex-1">
+                        <div className="text-sm font-medium">{selectedFile.name}</div>
+                        <div className="text-xs text-gray-500">{chatFileService.formatFileSize(selectedFile.size)}</div>
+                      </div>
+                      <button 
+                        onClick={removeSelectedFile}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+                  
+                  <div className="flex items-center gap-2">
+                    {/* File upload button */}
+                    <label className="cursor-pointer">
+                      <input 
+                        type="file" 
+                        onChange={handleFileSelect}
+                        accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+                        className="hidden"
+                      />
+                      <div className="p-2 rounded-full bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                        📎
+                      </div>
+                    </label>
+                    
+                    <input 
+                      value={composer} 
+                      onChange={(e) => setComposer(e.target.value)} 
+                      onKeyDown={(e) => { 
+                        if (e.key === 'Enter' && !e.shiftKey) { 
+                          e.preventDefault(); 
+                          if (selectedFile) {
+                            sendFileMessage()
+                          } else {
+                            sendTextMessage()
+                          }
+                        } 
+                      }} 
+                      className="flex-1 px-4 py-2 border dark:border-gray-600 rounded-full bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500" 
+                      placeholder={selectedFile ? "Add a caption (optional)..." : "Type a message..."} 
+                      disabled={!selectedRoomId}
+                    />
+                    
+                    <button 
+                      onClick={selectedFile ? sendFileMessage : sendTextMessage}
+                      className="px-4 py-2 rounded-full bg-blue-600 text-white shadow hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2" 
+                      disabled={!selectedRoomId || (!composer.trim() && !selectedFile) || fileUploading}
+                    >
+                      {fileUploading ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                          Uploading...
+                        </>
+                      ) : (
+                        'Send'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )
@@ -1996,6 +3491,75 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+
+          {/* Resident Service Requests */}
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Resident Service Requests</h3>
+              <button
+                onClick={async ()=>{
+                  try {
+                    setServiceRequestsLoading(true)
+                    const res = await mongoService.listServiceRequests({ limit: 200 })
+                    if (res.success) setServiceRequests(res.data || [])
+                    else setServiceRequests([])
+                  } finally { setServiceRequestsLoading(false) }
+                }}
+                className="px-3 py-2 bg-gray-600 text-white rounded-lg"
+              >Refresh</button>
+            </div>
+            {serviceRequestsLoading ? (
+              <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+            ) : serviceRequests.length === 0 ? (
+              <p className="text-gray-600 dark:text-gray-400">No service requests found.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full table-auto">
+                  <thead>
+                    <tr className="border-b border-gray-200 dark:border-gray-700">
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">ID</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Resident</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Location</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Category</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Priority</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Status</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-900 dark:text-white">Created</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {serviceRequests.map(sr => (
+                      <tr key={sr._id} className="border-b border-gray-100 dark:border-gray-700">
+                        <td className="py-3 px-4 font-mono text-xs text-gray-700 dark:text-gray-300">{sr.requestId || sr._id}</td>
+                        <td className="py-3 px-4 text-sm text-gray-900 dark:text-white">{sr.residentName || sr.residentAuthUserId}</td>
+                        <td className="py-3 px-4 text-sm text-gray-700 dark:text-gray-300">{sr.building}-{sr.flatNumber}</td>
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded">{sr.category}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`px-2 py-1 rounded text-xs ${
+                            sr.priority==='urgent'?'bg-red-100 text-red-800':
+                            sr.priority==='high'?'bg-orange-100 text-orange-800':
+                            sr.priority==='medium'?'bg-blue-100 text-blue-800':'bg-gray-100 text-gray-800'
+                          }`}>{sr.priority}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`px-2 py-1 rounded text-xs ${
+                            sr.status==='created'?'bg-gray-100 text-gray-800':
+                            sr.status==='assigned'?'bg-amber-100 text-amber-800':
+                            sr.status==='in_progress'?'bg-blue-100 text-blue-800':
+                            sr.status==='completed'?'bg-purple-100 text-purple-800':'bg-green-100 text-green-800'
+                          }`}>
+                            {String(sr.status||'').replace('_',' ')}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-xs text-gray-600 dark:text-gray-400">{new Date(sr.createdAt).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

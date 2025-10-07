@@ -44,6 +44,23 @@ export const chatService = {
     if (!res.ok) throw new Error('Failed to send message')
     return res.json()
   },
+  async sendFileMessage(roomId, senderAuthUserId, senderName, fileData, text = '') {
+    const payload = {
+      roomId,
+      senderAuthUserId,
+      senderName,
+      text,
+      media: {
+        type: fileData.type,
+        path: fileData.path,
+        publicUrl: fileData.publicUrl,
+        originalName: fileData.originalName,
+        size: fileData.size,
+        mimeType: fileData.mimeType
+      }
+    }
+    return this.sendMessage(payload)
+  },
   async editMessage(id, update) {
     const res = await fetch(`${API_BASE}/api/chat/messages/${encodeURIComponent(id)}`, {
       method: 'PUT',

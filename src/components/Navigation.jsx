@@ -17,7 +17,10 @@ import {
   Eye,
   ChevronLeft,
   ChevronRight,
-  CreditCard
+  CreditCard,
+  MessageSquare,
+  Truck,
+  Map
 } from 'lucide-react'
 
 const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) => {
@@ -42,9 +45,13 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
 
     const roleSpecificItems = {
       resident: [
+        { id: 'service-requests', label: 'Service Requests', icon: Wrench },
         { id: 'payments', label: 'My Bills', icon: CreditCard },
         { id: 'visitors', label: 'Visitor Pass', icon: QrCode },
+        { id: 'deliveries', label: 'Deliveries', icon: Truck },
         { id: 'complaints', label: 'Complaints', icon: FileText },
+        { id: 'map', label: 'Community Map', icon: Map },
+        { id: 'announcements', label: 'Announcements', icon: Bell },
         { id: 'chat', label: 'Chat', icon: Eye }
       ],
       admin: [
@@ -53,6 +60,9 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
         { id: 'maintenance', label: 'Bill Management', icon: CreditCard },
         { id: 'visitors', label: 'Visitor Management', icon: QrCode },
         { id: 'complaints', label: 'Complaints', icon: FileText },
+        { id: 'add-residents', label: 'Add Residents', icon: Users },
+        { id: 'announcements', label: 'Announcements', icon: Bell },
+        { id: 'chat', label: 'Chat', icon: MessageSquare },
         { id: 'settings', label: 'Settings', icon: Settings }
       ],
       staff: [
@@ -61,6 +71,8 @@ const Navigation = ({ currentPage, onNavigate, isCollapsed, setIsCollapsed }) =>
       ],
       security: [
         { id: 'visitors', label: 'Visitor Log', icon: Eye },
+        { id: 'residents', label: 'Resident Directory', icon: Building2 },
+        { id: 'deliveries', label: 'Delivery Logs', icon: Truck },
         { id: 'scan-pass', label: 'Scan Pass', icon: QrCode },
         { id: 'security', label: 'Security', icon: Shield }
       ]
