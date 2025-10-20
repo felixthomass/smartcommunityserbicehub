@@ -1,5 +1,5 @@
 // Email service for sending staff credentials and notifications
-const EMAIL_SERVER_URL = 'http://localhost:3001'
+import { EMAIL_SERVER_URL } from '../config/environment.js'
 
 export const emailService = {
   /**

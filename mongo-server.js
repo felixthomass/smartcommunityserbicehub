@@ -12,10 +12,17 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const app = express()
-const PORT = 3002
+const PORT = process.env.PORT || 3002
 
 // Middleware
-app.use(cors())
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://smartcommunityserbicehub.vercel.app'
+  ],
+  credentials: true
+}))
 app.use(express.json())
 
 // Create uploads directory if it doesn't exist

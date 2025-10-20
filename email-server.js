@@ -4,10 +4,17 @@ import nodemailer from 'nodemailer'
 import cors from 'cors'
 
 const app = express()
-const PORT = 3001
+const PORT = process.env.PORT || 3001
 
 // Middleware
-app.use(cors())
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://smartcommunityserbicehub.vercel.app'
+  ],
+  credentials: true
+}))
 app.use(express.json())
 
 // Gmail configuration with your credentials

@@ -1,6 +1,8 @@
+import { API_BASE_URL } from '../config/environment.js'
+
 class MonthlyFeeService {
   constructor() {
-    this.baseUrl = 'http://localhost:3002/api'
+    this.baseUrl = API_BASE_URL.endsWith('/api') ? API_BASE_URL : `${API_BASE_URL}/api`
   }
 
   async getFee() {

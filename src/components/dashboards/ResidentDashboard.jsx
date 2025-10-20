@@ -1112,7 +1112,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
 
   // Share pass functions
   const sharePassViaWhatsApp = (pass) => {
-    const link = `http://localhost:5173/communitymap`
+    const link = `${import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app'}/communitymap`
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
     
     // Calculate time remaining
@@ -1194,7 +1194,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   }
 
   const sharePassViaEmail = async (pass) => {
-    const link = `http://localhost:5173/communitymap`
+    const link = `${import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app'}/communitymap`
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
     
     const subject = `🏠 Visitor Pass - ${pass.visitorName} - ${pass.building}${pass.flatNumber}`
@@ -1237,7 +1237,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   }
 
   const copyPassToClipboard = async (pass) => {
-    const link = `http://localhost:5173/communitymap`
+    const link = `${import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app'}/communitymap`
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
     
     const passText = `🏠 VISITOR PASS\n` +

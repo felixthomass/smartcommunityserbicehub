@@ -1,0 +1,18 @@
+{
+  "env": {
+    "VITE_SUPABASE_URL": "https://fgzsrgoxgoserdmbctvl.supabase.co",
+    "VITE_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnenNyZ294Z29zZXJkbWJjdHZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQyODI3NDEsImV4cCI6MjA2OTg1ODc0MX0.PlAisOeMbUr4x9xVkUUMbJBqO-53rFMv51GxTiq8QE0",
+    "VITE_API_BASE_URL": "https://smartcommunityserbicehub.onrender.com",
+    "VITE_MONGO_API_URL": "https://smartcommunityserbicehub.onrender.com",
+    "VITE_EMAIL_SERVER_URL": "https://smartcommunityserbicehub.onrender.com"
+  },
+  "build": {
+    "env": {
+      "VITE_SUPABASE_URL": "https://fgzsrgoxgoserdmbctvl.supabase.co",
+      "VITE_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZnenNyZ294Z29zZXJkbWJjdHZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQyODI3NDEsImV4cCI6MjA2OTg1ODc0MX0.PlAisOeMbUr4x9xVkUUMbJBqO-53rFMv51GxTiq8QE0",
+      "VITE_API_BASE_URL": "https://smartcommunityserbicehub.onrender.com",
+      "VITE_MONGO_API_URL": "https://smartcommunityserbicehub.onrender.com",
+      "VITE_EMAIL_SERVER_URL": "https://smartcommunityserbicehub.onrender.com"
+    }
+  }
+}

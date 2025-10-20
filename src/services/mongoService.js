@@ -1,7 +1,6 @@
 // MongoDB service for visitor logs
 import { storageService } from './storageService'
-
-const MONGO_API_URL = (import.meta?.env?.VITE_MONGO_API_URL && import.meta.env.VITE_MONGO_API_URL.trim()) || 'http://localhost:3002' // MongoDB API server
+import { MONGO_API_URL } from '../config/environment.js'
 
 export const mongoService = {
   /**
