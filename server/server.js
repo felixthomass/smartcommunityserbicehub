@@ -47,6 +47,7 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 }
 
 const User = mongoose.model('User', userSchema)
+const crypto = require('crypto')
 
 // Resident Schema
 const residentSchema = new mongoose.Schema({
@@ -298,6 +299,73 @@ app.post('/api/residents', async (req, res) => {
     res.json({ success: true, resident, message: 'Resident profile saved' })
   } catch (error) {
     console.error('Upsert resident error:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Alias to match frontend usage: /api/residents/flat/:building/:flatNumber
+app.get('/api/residents/flat/:building/:flatNumber', async (req, res) => {
+  try {
+    const { building, flatNumber } = req.params
+    const doc = await Resident.findOne({ building, flatNumber }).lean()
+    if (!doc) return res.status(404).json({ success: false, error: 'Resident not found' })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('Error fetching resident by flat:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ===== Razorpay Payment for Verification (mirror endpoints) =====
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_R79jO6N4F99QLG'
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'HgKjdH7mCViwebMQTIFmbx7R'
+
+// Create order
+app.post('/api/payments/razorpay/order', async (req, res) => {
+  try {
+    const { amount = 500000, currency = 'INR', receipt, notes } = req.body || {}
+    const orderPayload = {
+      amount: Number(amount),
+      currency,
+      receipt: receipt || `verify_${Date.now()}`,
+      notes: { purpose: 'resident_verification_fee', ...(notes || {}) }
+    }
+
+    const authHeader = 'Basic ' + Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')
+    const resp = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+      body: JSON.stringify(orderPayload)
+    })
+    if (!resp.ok) {
+      const text = await resp.text()
+      throw new Error(`Razorpay order failed: ${resp.status} ${text}`)
+    }
+    const order = await resp.json()
+    res.json({ success: true, data: { order, keyId: RAZORPAY_KEY_ID } })
+  } catch (error) {
+    console.error('Razorpay order error:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Verify signature
+app.post('/api/payments/razorpay/verify', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {}
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, error: 'Missing payment verification fields' })
+    }
+
+    const hmac = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET)
+    hmac.update(razorpay_order_id + '|' + razorpay_payment_id)
+    const expectedSignature = hmac.digest('hex')
+    const isValid = expectedSignature === razorpay_signature
+    if (!isValid) return res.status(400).json({ success: false, error: 'Invalid signature' })
+
+    res.json({ success: true, data: { verified: true, paid: true } })
+  } catch (error) {
+    console.error('Razorpay verify error:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })

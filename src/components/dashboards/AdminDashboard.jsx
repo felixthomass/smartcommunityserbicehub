@@ -6,7 +6,8 @@ import { mongoService } from '../../services/mongoService'
 import AdminUserManagementSimple from '../AdminUserManagementSimple'
 import AdminAddResidents from '../AdminAddResidents'
 import { complaintService } from '../../services/complaintService'
-import { billService } from '../../services/billService'
+// removed legacy billService and monthlyFeeService imports
+import AdminMonthlyFee from '../AdminMonthlyFee'
 import { residentService } from '../../services/residentService'
 import { notificationService } from '../../services/notificationService'
 import { emailService } from '../../services/emailService'
@@ -52,36 +53,7 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [visitorDate, setVisitorDate] = useState('')
   const [visitorBuilding, setVisitorBuilding] = useState('all')
 
-  // Bill Management State
-  const [bills, setBills] = useState([])
-  const [billsLoading, setBillsLoading] = useState(false)
-  const [billView, setBillView] = useState('list') // 'list', 'create', 'edit', 'details'
-  const [selectedBill, setSelectedBill] = useState(null)
-  const [billStats, setBillStats] = useState({
-    totalBills: 0,
-    totalAmount: 0,
-    paidAmount: 0,
-    pendingAmount: 0,
-    overdueCount: 0
-  })
-  const [billForm, setBillForm] = useState({
-    title: '',
-    description: '',
-    category: 'electricity',
-    totalAmount: '',
-    dueDate: '',
-    splitType: 'equal',
-    selectedResidents: [],
-    customSplits: {},
-    apartmentSizes: {},
-    attachments: []
-  })
-  const [residents, setResidents] = useState([])
-  const [billFilters, setBillFilters] = useState({
-    category: 'all',
-    status: 'all',
-    search: ''
-  })
+  // removed legacy Bill Management State
 
   // Notification Management State
   const [notifications, setNotifications] = useState([])
@@ -234,35 +206,8 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         }
       })()
     }
-    if (currentPage === 'maintenance') {
-      ;(async () => {
-        try {
-          setBillsLoading(true)
-          // Load bills and residents
-          const [billsResult, residentsResult, statsResult] = await Promise.all([
-            billService.getAllBills(),
-            residentService.listResidents(),
-            billService.getBillStats()
-          ])
-          
-          if (billsResult.success) {
-            setBills(billsResult.data?.bills || [])
-          }
-          if (residentsResult.success) {
-            setResidents(residentsResult.residents || [])
-          }
-          if (statsResult.success) {
-            setBillStats(statsResult.data)
-          }
-        } catch (e) {
-          console.error('Error loading bill data:', e)
-          setBills([])
-          setResidents([])
-        } finally {
-          setBillsLoading(false)
-        }
-      })()
-    }
+    // monthly-fee handled in renderContent; avoid returning JSX here
+    // removed legacy maintenance loader
     if (currentPage === 'notifications') {
       ;(async () => {
         try {
@@ -817,188 +762,7 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     return matchesSearch && matchesRole
   })
 
-  // Bill Management Functions
-  const handleCreateBill = async (e) => {
-    e.preventDefault()
-    
-    if (!billForm.title || !billForm.totalAmount || !billForm.dueDate || billForm.selectedResidents.length === 0) {
-      showError('Missing Required Information', 'Please fill in all required fields and select at least one resident.')
-      return
-    }
-
-    try {
-      setBillsLoading(true)
-      
-      // Calculate bill split
-      const assignments = billService.calculateBillSplit({
-        type: billForm.splitType,
-        totalAmount: parseFloat(billForm.totalAmount),
-        residents: residents.filter(r => billForm.selectedResidents.includes(r.authUserId)),
-        customSplits: billForm.customSplits,
-        apartmentSizes: billForm.apartmentSizes
-      })
-
-      const billData = {
-        title: billForm.title,
-        description: billForm.description,
-        category: billForm.category,
-        totalAmount: parseFloat(billForm.totalAmount),
-        dueDate: billForm.dueDate,
-        splitType: billForm.splitType,
-        assignments,
-        createdBy: user.id,
-        attachments: billForm.attachments
-      }
-
-      const result = await billService.createBill(billData)
-      
-      if (result.success) {
-        showSuccess('Bill Created Successfully!', 'The bill has been created and assigned to residents.')
-        setBillForm({
-          title: '',
-          description: '',
-          category: 'electricity',
-          totalAmount: '',
-          dueDate: '',
-          splitType: 'equal',
-          selectedResidents: [],
-          customSplits: {},
-          apartmentSizes: {},
-          attachments: []
-        })
-        setBillView('list')
-        
-        // Reload data
-        const [billsResult, statsResult] = await Promise.all([
-          billService.getAllBills(),
-          billService.getBillStats()
-        ])
-        
-        if (billsResult.success) setBills(billsResult.data?.bills || [])
-        if (statsResult.success) setBillStats(statsResult.data)
-      } else {
-        showError('Failed to Create Bill', result.error || 'Please try again later.')
-      }
-    } catch (error) {
-      console.error('Error creating bill:', error)
-      showError('Error Creating Bill', error.message || 'Please check your connection and try again.')
-    } finally {
-      setBillsLoading(false)
-    }
-  }
-
-  const handleUpdateBill = async (e) => {
-    e.preventDefault()
-    
-    if (!selectedBill) return
-
-    try {
-      setBillsLoading(true)
-      
-      // Recalculate assignments if split changed
-      const assignments = billService.calculateBillSplit({
-        type: billForm.splitType,
-        totalAmount: parseFloat(billForm.totalAmount),
-        residents: residents.filter(r => billForm.selectedResidents.includes(r.authUserId)),
-        customSplits: billForm.customSplits,
-        apartmentSizes: billForm.apartmentSizes
-      })
-
-      const updateData = {
-        title: billForm.title,
-        description: billForm.description,
-        category: billForm.category,
-        totalAmount: parseFloat(billForm.totalAmount),
-        dueDate: billForm.dueDate,
-        splitType: billForm.splitType,
-        assignments,
-        attachments: billForm.attachments
-      }
-
-      const result = await billService.updateBill(selectedBill._id, updateData)
-      
-      if (result.success) {
-        showSuccess('Bill Updated Successfully!', 'The bill has been updated.')
-        setBillView('list')
-        setSelectedBill(null)
-        
-        // Reload data
-        const [billsResult, statsResult] = await Promise.all([
-          billService.getAllBills(),
-          billService.getBillStats()
-        ])
-        
-        if (billsResult.success) setBills(billsResult.data?.bills || [])
-        if (statsResult.success) setBillStats(statsResult.data)
-      } else {
-        showError('Failed to Update Bill', result.error || 'Please try again later.')
-      }
-    } catch (error) {
-      console.error('Error updating bill:', error)
-      showError('Error Updating Bill', error.message || 'Please try again later.')
-    } finally {
-      setBillsLoading(false)
-    }
-  }
-
-  const handleDeleteBill = async (billId) => {
-    if (!confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
-      return
-    }
-
-    try {
-      setBillsLoading(true)
-      const result = await billService.deleteBill(billId)
-      
-      if (result.success) {
-        showSuccess('Bill Deleted Successfully!', 'The bill has been removed.')
-        
-        // Reload data
-        const [billsResult, statsResult] = await Promise.all([
-          billService.getAllBills(),
-          billService.getBillStats()
-        ])
-        
-        if (billsResult.success) setBills(billsResult.data?.bills || [])
-        if (statsResult.success) setBillStats(statsResult.data)
-      } else {
-        showError('Failed to Delete Bill', result.error || 'Please try again later.')
-      }
-    } catch (error) {
-      console.error('Error deleting bill:', error)
-      showError('Error Deleting Bill', error.message || 'Please try again later.')
-    } finally {
-      setBillsLoading(false)
-    }
-  }
-
-  const handleEditBill = (bill) => {
-    setSelectedBill(bill)
-    setBillForm({
-      title: bill.title,
-      description: bill.description || '',
-      category: bill.category,
-      totalAmount: bill.totalAmount.toString(),
-      dueDate: bill.dueDate.split('T')[0], // Convert to YYYY-MM-DD format
-      splitType: bill.splitType,
-      selectedResidents: bill.assignments?.map(a => a.residentId) || [],
-      customSplits: bill.assignments?.reduce((acc, a) => ({ ...acc, [a.residentId]: a.amount }), {}) || {},
-      apartmentSizes: {},
-      attachments: bill.attachments || []
-    })
-    setBillView('edit')
-  }
-
-  // Filter bills
-  const filteredBills = bills.filter(bill => {
-    const matchesCategory = billFilters.category === 'all' || bill.category === billFilters.category
-    const matchesStatus = billFilters.status === 'all' || bill.status === billFilters.status
-    const matchesSearch = !billFilters.search || 
-      bill.title.toLowerCase().includes(billFilters.search.toLowerCase()) ||
-      bill.description?.toLowerCase().includes(billFilters.search.toLowerCase())
-    
-    return matchesCategory && matchesStatus && matchesSearch
-  })
+  // removed legacy Bill Management Functions and filters
 
   // Notification Management Functions
   const handleCreateNotification = async (e) => {
@@ -1316,6 +1080,15 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
 
 
   const renderContent = () => {
+    if (currentPage === 'monthly-fee') {
+      return (
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+            <AdminMonthlyFee adminId={user.id} />
+          </div>
+        </div>
+      )
+    }
     // Show residents management when admin-users page is active
     if (currentPage === 'admin-users') {
       return <AdminUserManagementSimple />

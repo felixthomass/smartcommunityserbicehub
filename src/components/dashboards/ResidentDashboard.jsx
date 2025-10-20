@@ -16,6 +16,8 @@ import { announcementService } from '../../services/announcementService'
 import { authService } from '../../services/authService'
 import { deliveryService } from '../../services/deliveryService'
 import { mongoService } from '../../services/mongoService'
+import { monthlyFeeService } from '../../services/monthlyFeeService'
+import { paymentService } from '../../services/paymentService'
 import { showSuccess, showError, showConfirm, notify } from '../../utils/sweetAlert'
 import ResidentNotifications from '../ResidentNotifications'
 import CommunityMap from '../CommunityMap'
@@ -123,7 +125,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     phone: '',
     ownerName: '',
     flatNumber: '',
-    building: ''
+    building: '',
+    photoUrl: ''
   })
   const [errors, setErrors] = useState({})
   const [complaintForm, setComplaintForm] = useState({ title: '', description: '', category: 'general', priority: 'normal' })
@@ -154,11 +157,94 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const [selectedFile, setSelectedFile] = useState(null)
   const [adminUsers, setAdminUsers] = useState([])
   const [assignedLocation, setAssignedLocation] = useState({ building: '', flatNumber: '' })
+  const [avatarUploading, setAvatarUploading] = useState(false)
+  const [monthlyFee, setMonthlyFee] = useState(null)
+  const [monthlyPayments, setMonthlyPayments] = useState([])
+  const [monthlyMonth, setMonthlyMonth] = useState(() => {
+    const d = new Date(); const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); return `${y}-${m}`
+  })
+  const getMonthKey = (d)=>{ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,'0'); return `${y}-${m}` }
+  const nowForPay = new Date()
+  const maxPayMonthKey = getMonthKey(new Date(nowForPay.getFullYear(), nowForPay.getMonth() + 2, 1))
+  const minPayMonthKey = getMonthKey(new Date(nowForPay.getFullYear(), nowForPay.getMonth(), 1))
+  const shiftMonth = (delta)=>{ const [y,m]=monthlyMonth.split('-').map(Number); const d=new Date(y, m-1, 1); d.setMonth(d.getMonth()+delta); const nextKey = getMonthKey(d); const nextDate = new Date(d); const minDate = new Date(minPayMonthKey+'-01'); const maxDate = new Date(maxPayMonthKey+'-01'); if (nextDate < minDate) { setMonthlyMonth(minPayMonthKey); return } if (nextDate > maxDate) { setMonthlyMonth(maxPayMonthKey); return } setMonthlyMonth(nextKey) }
+  const isWithinTwoMonthsAhead = (mk) => {
+    try {
+      const [y, m] = String(mk).split('-').map(Number)
+      if (!y || !m) return false
+      const selected = new Date(y, m - 1, 1)
+      const now = new Date()
+      const max = new Date(now.getFullYear(), now.getMonth() + 2, 1)
+      const min = new Date(now.getFullYear(), now.getMonth(), 1)
+      return selected >= min && selected <= max
+    } catch { return false }
+  }
 
   const getResolvedLocation = () => {
     const b = (assignedLocation.building || form.building || profile?.building || user.building || '').trim()
     const f = (assignedLocation.flatNumber || form.flatNumber || profile?.flatNumber || user.flatNumber || '').trim()
     return { building: b, flatNumber: f }
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'payments' || !user?.id) return
+    ;(async () => {
+      try {
+        const feeRes = await monthlyFeeService.getFee()
+        if (feeRes.success) setMonthlyFee(feeRes.data || null)
+        const statusRes = await monthlyFeeService.getStatus(user.id)
+        if (statusRes.success) setMonthlyPayments(statusRes.data?.payments || [])
+      } catch (e) { console.error('Monthly fee load error:', e); setMonthlyFee(null); setMonthlyPayments([]) }
+    })()
+  }, [activeTab, user?.id])
+
+  const handlePayMonthlyFee = async () => {
+    try {
+      if (!monthlyFee?.amount) { showError('No monthly fee configured.'); return }
+      if (!isWithinTwoMonthsAhead(monthlyMonth)) { showError('You can only pay current or next 2 months; past or beyond not allowed.'); return }
+      // Create order for selected month amount
+      const orderResp = await paymentService.createVerificationOrder({ supabaseUserId: user.id, amountPaise: Number(monthlyFee.amount) * 100 })
+      if (!orderResp?.success) throw new Error(orderResp?.error || 'Failed to create order')
+      const { order, keyId } = orderResp.data
+      await new Promise((resolve, reject) => {
+        const options = {
+          key: keyId,
+          amount: order.amount,
+          currency: order.currency,
+          name: 'Community Service',
+          description: `Monthly Fee ${monthlyMonth}`,
+          order_id: order.id,
+          prefill: { name: profile?.name || user.name, email: profile?.email || user.email },
+          handler: async (response) => {
+            try {
+              const verify = await paymentService.verifyPayment({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                supabaseUserId: user.id,
+                month: monthlyMonth,
+                type: 'monthly_fee'
+              })
+              if (verify?.success) {
+                showSuccess('Monthly fee paid successfully')
+                // refresh status
+                const statusRes = await monthlyFeeService.getStatus(user.id)
+                if (statusRes.success) setMonthlyPayments(statusRes.data?.payments || [])
+                resolve()
+              } else {
+                showError(verify?.error || 'Payment verification failed'); reject(new Error('verify failed'))
+              }
+            } catch (err) { reject(err) }
+          },
+          modal: { ondismiss: () => reject(new Error('Payment cancelled')) }
+        }
+        const rzp = new window.Razorpay(options)
+        rzp.open()
+      })
+    } catch (e) {
+      console.error('Monthly fee payment error:', e)
+      showError(e.message || 'Payment failed')
+    }
   }
 
   // Avatar helpers
@@ -267,11 +353,12 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                 phone: resident.phone || base.phone,
                 ownerName: resident.ownerName || base.ownerName,
                 flatNumber: resident.flatNumber || base.flatNumber,
-                building: resident.building || base.building
+                building: resident.building || base.building,
+                photoUrl: resident.photoUrl || ''
               })
               setNeedsProfile(!hasRequiredFields(resident))
             } else {
-              setForm(base)
+              setForm({ ...base, photoUrl: '' })
               setNeedsProfile(!hasRequiredFields(base))
             }
           }
@@ -464,12 +551,14 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       if (activeTab !== 'chat' || !user?.id) return
       try {
         setChatLoading(true)
-        // Load all residents and admin users to create unified group
+        // Load only admin-created residents and admin users to create unified group
         try {
-          const { residents } = await residentService.listResidents()
-          setResidentsList(residents || [])
-          const residentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
-          console.log('Resident chat: Found residents:', residentIds)
+          // Use the same approach as AdminUserManagementSimple - get admin resident entries
+          const res = await mongoService.getAdminResidentEntries?.()
+          const residents = res?.success ? (res.data || []) : []
+          setResidentsList(residents)
+          const residentIds = residents.map(r => r.authUserId || r._id).filter(Boolean)
+          console.log('Resident chat: Found admin-created residents:', residentIds.length)
           console.log('Resident chat: Current user ID:', user.id)
           
           // Create unified community group with all residents (including current user)
@@ -600,13 +689,15 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   // Ensure Community Group exists
   const ensureCommunityGroup = async () => {
     try {
-      const { residents } = await residentService.listResidents()
-      const residentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+      // Use the same approach as AdminUserManagementSimple - get admin resident entries
+      const res = await mongoService.getAdminResidentEntries?.()
+      const residents = res?.success ? (res.data || []) : []
+      const residentIds = residents.map(r => r.authUserId || r._id).filter(Boolean)
       const allIds = [...residentIds]
       if (!allIds.includes(user.id)) {
         allIds.push(user.id)
       }
-      console.log('Ensuring Community Group exists with IDs:', allIds)
+      console.log('Ensuring Community Group exists with admin-created residents:', allIds.length, 'IDs')
       await chatService.createOrGetGroupRoom('Community Group', allIds)
       return true
     } catch (e) {
@@ -745,15 +836,16 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       
       // Load delivery notifications
       // Extract building and flat from user profile or use defaults
-              const loc1 = getResolvedLocation()
-              const b1 = loc1.building || 'A'
-              const f1 = loc1.flatNumber || '101'
-              console.log('🔍 Loading delivery notifications for:', b1, f1)
-              const delNotifs1 = deliveryService.getResidentNotifications(b1, f1)
+      const loc1 = getResolvedLocation()
+      const b1 = loc1.building || 'A'
+      const f1 = loc1.flatNumber || '101'
+      console.log('🔍 Loading delivery notifications for:', b1, f1)
+      const dnRes = await deliveryService.getResidentNotifications(b1, f1)
+      const deliveryNotifications = Array.isArray(dnRes) ? dnRes : (dnRes?.data || [])
       console.log('📦 Delivery notifications found:', deliveryNotifications)
       
       // Combine and sort notifications by date
-      const allNotifications = [...regularNotifications, ...deliveryNotifications]
+      const allNotifications = [...regularNotifications, ...(Array.isArray(deliveryNotifications) ? deliveryNotifications : [])]
       allNotifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       
       setNotifications(allNotifications)
@@ -773,15 +865,9 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   }, [activeTab, user, profile, form])
 
   // Auto-refresh notifications every 30 seconds when on notifications tab or dashboard
+  // Disabled auto-refresh of notifications on request
   useEffect(() => {
-    if (activeTab !== 'notifications' && activeTab !== 'dashboard') return
-
-    const interval = setInterval(() => {
-      console.log('🔄 Auto-refreshing notifications...')
-      loadNotifications()
-    }, 30000) // 30 seconds
-
-    return () => clearInterval(interval)
+    return () => {}
   }, [activeTab, user, profile, form])
 
   // Listen for storage changes (when new notifications are added)
@@ -937,9 +1023,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const handleNotificationClick = async (notification) => {
     // Mark as read for delivery notifications
     if (notification.type === 'delivery' && notification.status === 'unread') {
-      const building = profile?.building || form?.building || 'A'
-      const flatNumber = profile?.flatNumber || form?.flatNumber || '101'
-      deliveryService.markNotificationAsRead(notification._id, building, flatNumber)
+      const { building, flatNumber } = getResolvedLocation()
+      deliveryService.markNotificationAsRead(notification._id, building || 'A', flatNumber || '101')
       setNotifications(prev => 
         prev.map(n => n._id === notification._id ? { ...n, status: 'read', isRead: true } : n)
       )
@@ -975,17 +1060,11 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       await notificationService.markAllAsRead(user.id)
       
       // Mark delivery notifications as read
-      const loc2 = getResolvedLocation()
-      const b2 = loc2.building || 'A'
-      const f2 = loc2.flatNumber || '101'
-      const delNotifs2 = deliveryService.getResidentNotifications(b2, f2)
-      const loc3 = getResolvedLocation()
-      const b3 = loc3.building || 'A'
-      const f3 = loc3.flatNumber || '101'
-      const delNotifs3 = deliveryService.getResidentNotifications(b3, f3)
+      const { building, flatNumber } = getResolvedLocation()
+      const deliveryNotifications = deliveryService.getResidentNotifications(building || 'A', flatNumber || '101')
       deliveryNotifications.forEach(notification => {
         if (notification.status === 'unread') {
-          deliveryService.markNotificationAsRead(notification._id, building, flatNumber)
+          deliveryService.markNotificationAsRead(notification._id, building || 'A', flatNumber || '101')
         }
       })
       
@@ -997,54 +1076,200 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     }
   }
 
+  const deleteNotification = async (notification) => {
+    try {
+      console.log('🗑️ Deleting notification:', notification._id, notification.type)
+      
+      if (notification.type === 'delivery') {
+        // Delete delivery notification from localStorage
+        const { building, flatNumber } = getResolvedLocation()
+        const success = deliveryService.deleteNotification(notification._id, building || 'A', flatNumber || '101')
+        
+        if (success) {
+          // Remove from local state
+          setNotifications(prev => prev.filter(n => n._id !== notification._id))
+          showSuccess('Notification Deleted', 'Delivery notification has been deleted.')
+        } else {
+          showError('Delete Failed', 'Failed to delete the notification.')
+        }
+      } else {
+        // Delete regular notification from backend
+        const result = await notificationService.deleteNotification(notification._id)
+        
+        if (result.success) {
+          // Remove from local state
+          setNotifications(prev => prev.filter(n => n._id !== notification._id))
+          showSuccess('Notification Deleted', 'Notification has been deleted.')
+        } else {
+          showError('Delete Failed', result.error || 'Failed to delete the notification.')
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting notification:', error)
+      showError('Delete Failed', 'Failed to delete the notification.')
+    }
+  }
+
   // Share pass functions
   const sharePassViaWhatsApp = (pass) => {
-    const link = `http://localhost:5173/communitymap?flat=${encodeURIComponent(pass.building)}-${encodeURIComponent(pass.flatNumber)}&passCode=${encodeURIComponent(pass.code)}`
-    const message = `🏠 *Visitor Pass for ${pass.visitorName}*\n\n` +
-      `📱 *Code:* ${pass.code}\n` +
-      `👤 *Visitor:* ${pass.visitorName}\n` +
-      `📞 *Phone:* ${pass.visitorPhone}\n` +
-      `🏢 *Building:* ${pass.building}\n` +
-      `🚪 *Flat:* ${pass.flatNumber}\n` +
-      `⏰ *Valid Until:* ${new Date(pass.validUntil).toLocaleString()}\n` +
-      `🗺️ *Directions Link:* ${link}\n\n` +
-      `Please show this QR code at the security gate.`
+    const link = `http://localhost:5173/communitymap`
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
+    
+    // Calculate time remaining
+    const now = new Date()
+    const validUntil = new Date(pass.validUntil)
+    const timeRemaining = Math.max(0, Math.round((validUntil - now) / (1000 * 60 * 60)))
+    const isExpired = validUntil <= now
+    const status = isExpired ? '❌ EXPIRED' : timeRemaining <= 1 ? '⚠️ EXPIRES SOON' : '✅ ACTIVE'
+    
+    const message = `🏠 *VISITOR PASS* 🏠\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📋 *PASS CODE:* \`${pass.code}\`\n` +
+      `📊 *STATUS:* ${status}\n\n` +
+      `👤 *VISITOR INFORMATION:*\n` +
+      `   • Name: ${pass.visitorName}\n` +
+      `   • Phone: ${pass.visitorPhone}\n` +
+      `${pass.visitorEmail ? `   • Email: ${pass.visitorEmail}\n` : ''}\n` +
+      `🏢 *DESTINATION DETAILS:*\n` +
+      `   • Building: ${pass.building}\n` +
+      `   • Flat: ${pass.flatNumber}\n` +
+      `   • Host: ${pass.hostName || 'Community Resident'}\n` +
+      `${pass.hostPhone ? `   • Host Phone: ${pass.hostPhone}\n` : ''}\n\n` +
+      `⏰ *VALIDITY INFORMATION:*\n` +
+      `   • Valid Until: ${validUntil.toLocaleString()}\n` +
+      `   • Time Remaining: ${isExpired ? 'Expired' : timeRemaining + ' hours'}\n` +
+      `   • Created: ${new Date(pass.createdAt || Date.now()).toLocaleString()}\n\n` +
+      `🗺️ *NAVIGATION & VERIFICATION:*\n` +
+      `   • Community Map: ${link}\n` +
+      `   • QR Code: Please check the image attached below\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `📋 *INSTRUCTIONS FOR VISITOR:*\n\n` +
+      `1️⃣ *Arrival:* Present this pass at the main gate\n` +
+      `2️⃣ *Verification:* Show the QR code image attached below\n` +
+      `3️⃣ *Navigation:* Follow the community map link\n` +
+      `4️⃣ *Contact:* Call host if assistance is needed\n` +
+      `5️⃣ *Security:* Keep this pass handy throughout visit\n\n` +
+      `⚠️ *IMPORTANT NOTES:*\n` +
+      `• This pass is valid only for the specified time period\n` +
+      `• Please arrive on time to avoid expiration\n` +
+      `• Contact your host if you have any questions\n` +
+      `• Keep this message accessible during your visit\n` +
+      `• QR code image is attached below for verification\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `Generated by: ${pass.hostName || 'Community Resident'}\n` +
+      `Community Service System\n` +
+      `Generated on: ${new Date().toLocaleString()}\n\n` +
+      `#VisitorPass #CommunityAccess #${pass.building}${pass.flatNumber}`
     
     const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`
+    
+    // Show instructions to user about QR code
+    showSuccess(
+      'WhatsApp Sharing Ready', 
+      `The visitor pass message has been prepared for WhatsApp sharing.\n\n📱 Instructions for QR Code:\n• WhatsApp will open with the pass message\n• To include the QR code image:\n  1. Click the attachment icon (📎) in WhatsApp\n  2. Select "Camera" or "Gallery"\n  3. Take a screenshot of the QR code from the pass display above\n  4. Or save this QR code URL: ${qrCodeUrl}\n\n✅ The pass code "${pass.code}" is included in the message for manual verification if needed.`
+    )
+    
     window.open(whatsappUrl, '_blank')
   }
 
+  // Download QR code as image
+  const downloadQRCode = async (pass) => {
+    try {
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=20`
+      
+      // Create a temporary link to download the QR code
+      const link = document.createElement('a')
+      link.href = qrCodeUrl
+      link.download = `visitor-pass-qr-${pass.code}.png`
+      link.target = '_blank'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      
+      showSuccess('QR Code Downloaded', 'QR code image has been downloaded. You can now attach it to WhatsApp or other messaging apps.')
+    } catch (error) {
+      console.error('Error downloading QR code:', error)
+      showError('Download Failed', 'Unable to download QR code. Please try again.')
+    }
+  }
+
   const sharePassViaEmail = async (pass) => {
-    const link = `http://localhost:5173/communitymap?flat=${encodeURIComponent(pass.building)}-${encodeURIComponent(pass.flatNumber)}&passCode=${encodeURIComponent(pass.code)}`
-    const subject = `Visitor Pass for ${pass.visitorName}`
+    const link = `http://localhost:5173/communitymap`
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
+    
+    const subject = `🏠 Visitor Pass - ${pass.visitorName} - ${pass.building}${pass.flatNumber}`
     const body = `Dear ${pass.visitorName},\n\n` +
-      `You have been granted a visitor pass for our community.\n\n` +
-      `**Pass Details:**\n` +
-      `• Code: ${pass.code}\n` +
-      `• Building: ${pass.building}\n` +
-      `• Flat: ${pass.flatNumber}\n` +
-      `• Valid Until: ${new Date(pass.validUntil).toLocaleString()}\n` +
-      `• Directions Link: ${link}\n\n` +
-      `Please show the QR code at the security gate for entry.\n\n` +
+      `You have been granted a visitor pass for our community. Please find all the details below:\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `VISITOR PASS DETAILS\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📋 PASS CODE: ${pass.code}\n\n` +
+      `👤 VISITOR INFORMATION:\n` +
+      `   • Name: ${pass.visitorName}\n` +
+      `   • Phone: ${pass.visitorPhone}\n` +
+      `${pass.visitorEmail ? `   • Email: ${pass.visitorEmail}\n` : ''}\n` +
+      `🏢 DESTINATION:\n` +
+      `   • Building: ${pass.building}\n` +
+      `   • Flat: ${pass.flatNumber}\n` +
+      `   • Host: ${pass.hostName || 'Community Resident'}\n` +
+      `${pass.hostPhone ? `   • Host Phone: ${pass.hostPhone}\n` : ''}\n\n` +
+      `⏰ VALIDITY:\n` +
+      `   • Valid Until: ${new Date(pass.validUntil).toLocaleString()}\n` +
+      `   • Time Remaining: ${Math.round((new Date(pass.validUntil) - new Date()) / (1000 * 60 * 60))} hours\n\n` +
+      `🗺️ NAVIGATION:\n` +
+      `   • Community Map: ${link}\n` +
+      `   • QR Code: ${qrCodeUrl}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `INSTRUCTIONS:\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `1. Present this pass at the main gate\n` +
+      `2. Show the QR code for verification\n` +
+      `3. Follow the community map for directions\n` +
+      `4. Contact your host if you need assistance\n\n` +
+      `⚠️ IMPORTANT: This pass is valid only for the specified time period.\n\n` +
       `Best regards,\n` +
-      `${user.name || 'Resident'}`
+      `${pass.hostName || user.name || 'Community Resident'}\n` +
+      `Community Service System\n` +
+      `Generated on: ${new Date().toLocaleString()}`
 
     const mailtoUrl = `mailto:${pass.visitorEmail || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
     window.open(mailtoUrl, '_blank')
   }
 
   const copyPassToClipboard = async (pass) => {
-    const link = `http://localhost:5173/communitymap?flat=${encodeURIComponent(pass.building)}-${encodeURIComponent(pass.flatNumber)}&passCode=${encodeURIComponent(pass.code)}`
-    const passText = `Visitor Pass Code: ${pass.code}\n` +
-      `Visitor: ${pass.visitorName}\n` +
-      `Building: ${pass.building}\n` +
-      `Flat: ${pass.flatNumber}\n` +
-      `Valid Until: ${new Date(pass.validUntil).toLocaleString()}\n` +
-      `Directions Link: ${link}`
+    const link = `http://localhost:5173/communitymap`
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
+    
+    const passText = `🏠 VISITOR PASS\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📋 PASS CODE: ${pass.code}\n\n` +
+      `👤 VISITOR INFORMATION:\n` +
+      `   • Name: ${pass.visitorName}\n` +
+      `   • Phone: ${pass.visitorPhone}\n` +
+      `${pass.visitorEmail ? `   • Email: ${pass.visitorEmail}\n` : ''}\n` +
+      `🏢 DESTINATION:\n` +
+      `   • Building: ${pass.building}\n` +
+      `   • Flat: ${pass.flatNumber}\n` +
+      `   • Host: ${pass.hostName || 'Community Resident'}\n` +
+      `${pass.hostPhone ? `   • Host Phone: ${pass.hostPhone}\n` : ''}\n\n` +
+      `⏰ VALIDITY:\n` +
+      `   • Valid Until: ${new Date(pass.validUntil).toLocaleString()}\n` +
+      `   • Time Remaining: ${Math.round((new Date(pass.validUntil) - new Date()) / (1000 * 60 * 60))} hours\n\n` +
+      `🗺️ NAVIGATION:\n` +
+      `   • Community Map: ${link}\n` +
+      `   • QR Code: ${qrCodeUrl}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `INSTRUCTIONS:\n` +
+      `1. Present this pass at the main gate\n` +
+      `2. Show the QR code for verification\n` +
+      `3. Follow the community map for directions\n` +
+      `4. Contact your host if you need assistance\n\n` +
+      `Generated by: ${pass.hostName || 'Community Resident'}\n` +
+      `Generated on: ${new Date().toLocaleString()}`
     
     try {
       await navigator.clipboard.writeText(passText)
-      showSuccess('Copied to Clipboard', 'Pass details have been copied to your clipboard.')
+      showSuccess('Copied to Clipboard', 'Complete pass details have been copied to your clipboard.')
     } catch (error) {
       console.error('Failed to copy to clipboard:', error)
       showError('Copy Failed', 'Unable to copy to clipboard. Please try again.')
@@ -1177,7 +1402,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
         phone: form.phone,
         ownerName: form.ownerName,
         flatNumber: form.flatNumber,
-        building: form.building
+        building: form.building,
+        photoUrl: form.photoUrl || ''
       })
       setHasSaved(true)
       setNeedsProfile(false)
@@ -1188,7 +1414,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
         phone: form.phone,
         ownerName: form.ownerName,
         flatNumber: form.flatNumber,
-        building: form.building
+        building: form.building,
+        photoUrl: form.photoUrl || profile?.photoUrl
       })
       
       // Show success message and switch back to profile view
@@ -1198,6 +1425,28 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       console.error(e)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleAvatarSelect = async (e) => {
+    try {
+      const file = e.target.files?.[0]
+      if (!file) return
+      setAvatarUploading(true)
+      // Reuse chat file uploader for simplicity
+      const res = await chatFileService.uploadChatFile(file)
+      if (res?.success && res.data) {
+        const url = res.data.publicUrl || res.data.url || res.data.path || ''
+        if (url) setForm(prev => ({ ...prev, photoUrl: url }))
+      } else {
+        showError('Upload failed', res?.error || 'Could not upload image.')
+      }
+    } catch (err) {
+      console.error('Avatar upload error:', err)
+      showError('Upload failed', 'Please try again.')
+    } finally {
+      setAvatarUploading(false)
+      try { e.target.value = '' } catch {}
     }
   }
 
@@ -1218,7 +1467,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   const handleVerificationSuccess = (resident) => {
     setResidentData(resident)
     setVerificationChecked(true)
-    try { setActiveTab('dashboard') } catch {}
+    try { setActiveTab('profile') } catch {}
   }
 
   const renderContent = () => {
@@ -1291,19 +1540,36 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                   {notifications.filter(n => n.type === 'delivery').slice(0, 3).map((notification) => (
                     <div
                       key={notification._id}
-                      className={`p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                      className={`p-3 border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
                         (!notification.isRead || notification.status === 'unread') 
                           ? 'border-green-300 bg-green-50 dark:bg-green-900/20' 
                           : 'border-gray-300 dark:border-gray-600'
                       }`}
-                      onClick={() => setActiveTab('deliveries')}
                     >
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
-                          <h4 className="font-medium text-gray-900 dark:text-white text-sm">
-                            {notification.title}
-                          </h4>
-                          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <h4 
+                              className="font-medium text-gray-900 dark:text-white text-sm cursor-pointer"
+                              onClick={() => setActiveTab('deliveries')}
+                            >
+                              {notification.title}
+                            </h4>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                deleteNotification(notification)
+                              }}
+                              className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors text-xs"
+                              title="Delete notification"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                          <p 
+                            className="text-xs text-gray-600 dark:text-gray-400 mt-1 cursor-pointer"
+                            onClick={() => setActiveTab('deliveries')}
+                          >
                             {notification.message}
                           </p>
                         </div>
@@ -1448,7 +1714,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                 <div>
                   <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Location</label>
                   <input readOnly className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
-                    value={`${form.building || profile?.building || 'A'}-${form.flatNumber || profile?.flatNumber || '101'}`} />
+                    value={(() => { const { building, flatNumber } = getResolvedLocation(); return `${building || 'A'}-${flatNumber || '101'}` })()} />
                 </div>
                 <div className="md:col-span-3">
                   <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Description</label>
@@ -1583,188 +1849,63 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       case 'payments':
         return (
           <div className="space-y-6">
-            {/* Bill Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-red-50 dark:bg-red-900/20 p-6 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <CreditCard className="w-8 h-8 text-red-600" />
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalPending?.toLocaleString() || 0}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Pending Bills</p>
-                  </div>
-                </div>
-              </div>
-              <div className="bg-orange-50 dark:bg-orange-900/20 p-6 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <CreditCard className="w-8 h-8 text-orange-600" />
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalOverdue?.toLocaleString() || 0}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Overdue</p>
-                  </div>
-                </div>
-              </div>
-              <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <CreditCard className="w-8 h-8 text-green-600" />
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">₹{billSummary.totalPaid?.toLocaleString() || 0}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Paid This Year</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Current Bills */}
+            {/* Monthly Fee Card */}
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">My Bills</h3>
-                <div className="flex gap-3">
-                  <select
-                    value={billFilters.status}
-                    onChange={(e) => setBillFilters({...billFilters, status: e.target.value})}
-                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                  >
-                    <option value="all">All Status</option>
-                    <option value="pending">Pending</option>
-                    <option value="paid">Paid</option>
-                  </select>
-                  <select
-                    value={billFilters.category}
-                    onChange={(e) => setBillFilters({...billFilters, category: e.target.value})}
-                    className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                  >
-                    <option value="all">All Categories</option>
-                    <option value="electricity">Electricity</option>
-                    <option value="water">Water</option>
-                    <option value="maintenance">Maintenance</option>
-                    <option value="gas">Gas</option>
-                    <option value="internet">Internet</option>
-                    <option value="security">Security</option>
-                    <option value="other">Other</option>
-                  </select>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Monthly Maintenance Fee</h3>
+                  <div className="mt-1 text-gray-600 dark:text-gray-400 text-sm">Amount: ₹{monthlyFee?.amount ?? '—'}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={()=>shiftMonth(-1)} className="px-2 py-1 border dark:border-gray-600 rounded">◀</button>
+                  <input type="month" value={monthlyMonth} min={minPayMonthKey} max={maxPayMonthKey} onChange={e=>setMonthlyMonth(e.target.value)} className="px-3 py-2 border dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
+                  <button onClick={()=>shiftMonth(1)} className="px-2 py-1 border dark:border-gray-600 rounded">▶</button>
                 </div>
               </div>
-
-              {billsLoading ? (
-                <div className="text-center py-8">
-                  <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                  <p className="text-gray-600 dark:text-gray-400">Loading bills...</p>
-                </div>
-              ) : filteredBills.length === 0 ? (
-                <div className="text-center py-8">
-                  <CreditCard className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                  <p className="text-gray-600 dark:text-gray-400">No bills found</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {filteredBills.map((bill) => {
-                    const assignment = bill.assignments?.find(a => a.residentId === user.id)
-                    if (!assignment) return null
-                    
-                    const isOverdue = new Date(bill.dueDate) < new Date() && assignment.status === 'pending'
-                    
-                    return (
-                      <div key={bill._id} className={`p-4 border rounded-lg ${
-                        isOverdue ? 'border-red-300 bg-red-50 dark:bg-red-900/10' : 'border-gray-300 dark:border-gray-600'
-                      }`}>
-                        <div className="flex justify-between items-start">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
-                              <h4 className="font-medium text-gray-900 dark:text-white">{bill.title}</h4>
-                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded capitalize">
-                                {bill.category}
-                              </span>
-                              {isOverdue && (
-                                <span className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded">
-                                  Overdue
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">{bill.description}</p>
-                            <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
-                              <span>Due: {new Date(bill.dueDate).toLocaleDateString()}</span>
-                              <span>Amount: ₹{assignment.amount?.toLocaleString()}</span>
-                              <span className={`px-2 py-1 rounded text-xs ${
-                                assignment.status === 'paid' 
-                                  ? 'bg-green-100 text-green-800' 
-                                  : 'bg-orange-100 text-orange-800'
-                              }`}>
-                                {assignment.status}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => setSelectedBill(bill)}
-                              className="px-3 py-2 text-blue-600 hover:text-blue-800 dark:text-blue-400 text-sm"
-                            >
-                              View Details
-                            </button>
-                            {assignment.status === 'pending' && (
-                              <button
-                                onClick={() => handlePayBill(bill)}
-                                disabled={paymentLoading}
-                                className={`px-4 py-2 rounded-lg text-white text-sm ${
-                                  paymentLoading 
-                                    ? 'bg-gray-400 cursor-not-allowed' 
-                                    : 'bg-green-600 hover:bg-green-700'
-                                }`}
-                              >
-                                {paymentLoading ? 'Processing...' : 'Pay Now'}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+              <div className="mt-4 flex gap-3 items-center">
+                {monthlyPayments.some(p => p.month === monthlyMonth) ? (
+                  <span className="inline-flex items-center gap-2 px-3 py-1 rounded bg-green-100 text-green-800 text-sm">Paid</span>
+                ) : !isWithinTwoMonthsAhead(monthlyMonth) ? (
+                  <span className="inline-flex items-center gap-2 px-3 py-1 rounded bg-gray-100 text-gray-600 text-sm">Not available</span>
+                ) : (
+                  <button onClick={handlePayMonthlyFee} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg">Pay Now</button>
+                )}
+              </div>
+              {monthlyFee == null && (
+                <div className="mt-2 text-sm text-orange-600">Monthly fee is not configured yet. Please contact admin.</div>
               )}
             </div>
 
-            {/* Payment History */}
+            {/* Monthly Payment History */}
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Payment History</h3>
-              {paymentHistory.length === 0 ? (
-                <p className="text-sm text-gray-600 dark:text-gray-400">No payment history found.</p>
-              ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b dark:border-gray-700">
-                      <th className="text-left py-2 text-gray-900 dark:text-white">Date</th>
-                        <th className="text-left py-2 text-gray-900 dark:text-white">Bill</th>
-                      <th className="text-left py-2 text-gray-900 dark:text-white">Amount</th>
-                        <th className="text-left py-2 text-gray-900 dark:text-white">Method</th>
-                        <th className="text-left py-2 text-gray-900 dark:text-white">Transaction ID</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                      {paymentHistory.map((payment) => (
-                        <tr key={payment._id} className="border-b dark:border-gray-700">
-                          <td className="py-2 text-gray-600 dark:text-gray-400">
-                            {new Date(payment.paidAt).toLocaleDateString()}
-                          </td>
-                          <td className="py-2 text-gray-600 dark:text-gray-400">
-                            <div>
-                              <p className="font-medium">{payment.billTitle}</p>
-                              <p className="text-xs text-gray-500 capitalize">{payment.category}</p>
-                            </div>
-                          </td>
-                          <td className="py-2 text-gray-600 dark:text-gray-400">
-                            ₹{payment.amount?.toLocaleString()}
-                          </td>
-                          <td className="py-2 text-gray-600 dark:text-gray-400 capitalize">
-                            {payment.paymentMethod}
-                          </td>
-                          <td className="py-2 text-gray-600 dark:text-gray-400 font-mono text-xs">
-                            {payment.transactionId}
-                          </td>
-                    </tr>
-                      ))}
-                  </tbody>
-                </table>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Monthly Payment History</h3>
               </div>
+              {monthlyPayments.length === 0 ? (
+                <p className="text-sm text-gray-600 dark:text-gray-400">No payments yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b dark:border-gray-700">
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Month</th>
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Amount</th>
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Paid At</th>
+                        <th className="text-left py-2 text-gray-900 dark:text-white">Txn</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyPayments.slice().sort((a,b)=>new Date(b.paidAt)-new Date(a.paidAt)).map((p) => (
+                        <tr key={(p._id||p.paymentId||p.razorpay_payment_id)+'_'+(p.month||'') } className="border-b dark:border-gray-700">
+                          <td className="py-2 text-gray-700 dark:text-gray-300">{p.month || (p.billTitle||'').replace('Monthly Fee ','')}</td>
+                          <td className="py-2 text-gray-700 dark:text-gray-300">₹{(p.amount||0)/100}</td>
+                          <td className="py-2 text-gray-700 dark:text-gray-300">{p.paidAt ? new Date(p.paidAt).toLocaleString() : '-'}</td>
+                          <td className="py-2 text-gray-700 dark:text-gray-300 font-mono text-xs">{p.paymentId || p.razorpay_payment_id || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </div>
@@ -1934,6 +2075,14 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                         >
                           <Share2 className="w-3 h-3" />
                           Copy
+                        </button>
+                        <button
+                          onClick={() => downloadQRCode(p)}
+                          className="px-3 py-1 rounded bg-purple-600 text-white hover:bg-purple-700 text-xs flex items-center gap-1"
+                          title="Download QR Code"
+                        >
+                          <QrCode className="w-3 h-3" />
+                          QR
                         </button>
                       </div>
                       <button
@@ -2289,14 +2438,15 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                     <button onClick={async () => {
                       try {
                         setChatLoading(true)
-                        // Force create Community Group
-                        const { residents } = await residentService.listResidents()
-                        const residentIds = (residents || []).map(r => r.authUserId).filter(Boolean)
+                        // Force create Community Group with admin-created residents
+                        const res = await mongoService.getAdminResidentEntries?.()
+                        const residents = res?.success ? (res.data || []) : []
+                        const residentIds = residents.map(r => r.authUserId || r._id).filter(Boolean)
                         const allIds = [...residentIds]
                         if (!allIds.includes(user.id)) {
                           allIds.push(user.id)
                         }
-                        console.log('Manual refresh: Creating Community Group with IDs:', allIds)
+                        console.log('Manual refresh: Creating Community Group with admin-created residents:', allIds.length, 'IDs')
                         await chatService.createOrGetGroupRoom('Community Group', allIds)
                         
                         // Reload rooms
@@ -2597,9 +2747,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                             await notificationService.markAllAsRead(user.id)
                             
                             // Clear delivery notifications
-                            const building = profile?.building || form?.building || 'A'
-                            const flatNumber = profile?.flatNumber || form?.flatNumber || '101'
-                            const key = `resident_notifications_${building}_${flatNumber}`
+                            const { building, flatNumber } = getResolvedLocation()
+                            const key = `resident_notifications_${building || 'A'}_${flatNumber || '101'}`
                             localStorage.removeItem(key)
                             
                             // Clear the notifications state
@@ -2635,8 +2784,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                   {notifications.map((notification) => (
                     <div
                       key={notification._id}
-                      onClick={() => handleNotificationClick(notification)}
-                      className={`p-4 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                      className={`p-4 border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
                         (!notification.isRead || notification.status === 'unread') ? 'border-blue-300 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-300 dark:border-gray-600'
                       }`}
                     >
@@ -2647,24 +2795,42 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                           notification.priority === 'medium' ? 'bg-blue-500' : 'bg-gray-400'
                         }`} />
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h4 className="font-medium text-gray-900 dark:text-white truncate">
-                              {notification.title}
-                            </h4>
-                            <span className={`px-2 py-1 text-xs rounded ${
-                              notification.type === 'bill' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
-                              notification.type === 'complaint' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
-                              notification.type === 'delivery' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' :
-                              notification.type === 'info' ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
-                              'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-200'
-                            }`}>
-                              {notification.type === 'delivery' ? '📦 Delivery' : notification.type}
-                            </span>
-                            {(!notification.isRead || notification.status === 'unread') && (
-                              <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                            )}
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
+                              <h4 
+                                className="font-medium text-gray-900 dark:text-white truncate cursor-pointer"
+                                onClick={() => handleNotificationClick(notification)}
+                              >
+                                {notification.title}
+                              </h4>
+                              <span className={`px-2 py-1 text-xs rounded ${
+                                notification.type === 'bill' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200' :
+                                notification.type === 'complaint' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200' :
+                                notification.type === 'delivery' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200' :
+                                notification.type === 'info' ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300' :
+                                'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-200'
+                              }`}>
+                                {notification.type === 'delivery' ? '📦 Delivery' : notification.type}
+                              </span>
+                              {(!notification.isRead || notification.status === 'unread') && (
+                                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                              )}
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                deleteNotification(notification)
+                              }}
+                              className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors"
+                              title="Delete notification"
+                            >
+                              🗑️
+                            </button>
                           </div>
-                          <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                          <p 
+                            className="text-sm text-gray-600 dark:text-gray-400 mb-2 cursor-pointer"
+                            onClick={() => handleNotificationClick(notification)}
+                          >
                             {notification.message}
                           </p>
                           
@@ -2758,6 +2924,37 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                 >
                   Cancel
                 </button>
+              </div>
+
+              {/* Avatar uploader */}
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-16 h-16 rounded-full overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-700">
+                  {(() => {
+                    const url = form.photoUrl || profile?.photoUrl
+                    if (url) return <img src={url} alt="Avatar" className="w-full h-full object-cover" />
+                    const initials = (user.name || user.email || 'U').slice(0,2).toUpperCase()
+                    return (
+                      <div className="w-full h-full flex items-center justify-center text-sm font-semibold text-gray-600 dark:text-gray-300">
+                        {initials}
+                      </div>
+                    )
+                  })()}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm cursor-pointer">
+                    {avatarUploading ? 'Uploading...' : 'Change Photo'}
+                    <input type="file" accept="image/*" className="hidden" onChange={handleAvatarSelect} disabled={avatarUploading} />
+                  </label>
+                  {form.photoUrl && (
+                    <button
+                      onClick={() => setForm(prev => ({ ...prev, photoUrl: '' }))}
+                      className="px-3 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 text-sm"
+                      disabled={avatarUploading}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2938,13 +3135,48 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                 <p className="text-sm text-gray-600 dark:text-gray-400">Welcome back, {user.name || 'User'}</p>
               </div>
             </div>
-            <button
-              onClick={onLogout}
-              className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-            >
-              <LogOut className="w-5 h-5" />
-              Logout
-            </button>
+            <div className="flex items-center gap-3">
+              {/* Header avatar */}
+              <button
+                onClick={() => setActiveTab('edit-profile')}
+                className="flex items-center gap-2 group"
+                title="View/Edit profile"
+              >
+                <div className="w-9 h-9 rounded-full overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-700">
+                  {(() => {
+                    const url = profile?.photoUrl || form.photoUrl
+                    if (url) {
+                      return (
+                        <img src={url} alt="Avatar" className="w-full h-full object-cover" />
+                      )
+                    }
+                    const initials = (user.name || user.email || 'U').slice(0,2).toUpperCase()
+                    return (
+                      <div className="w-full h-full flex items-center justify-center text-xs font-semibold text-gray-600 dark:text-gray-300">
+                        {initials}
+                      </div>
+                    )
+                  })()}
+                </div>
+                <span className="hidden sm:inline text-sm text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white">Profile</span>
+              </button>
+              {verificationChecked && residentData?.verified && needsProfile && (
+                <button
+                  onClick={() => setActiveTab('edit-profile')}
+                  className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm"
+                  title="Complete your profile"
+                >
+                  Add Profile
+                </button>
+              )}
+              <button
+                onClick={onLogout}
+                className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+              >
+                <LogOut className="w-5 h-5" />
+                Logout
+              </button>
+            </div>
           </div>
         </div>
       </header>

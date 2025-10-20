@@ -72,8 +72,26 @@ const AdminUserManagementSimple = () => {
     setMessage({ type: 'success', text: 'Role updated locally (no backend change in this view).' })
   }
 
-  const handleDeleteUser = async (userId) => {
-    showWarning('Feature Not Available', 'Deleting residents is not implemented yet in this view.')
+  const handleDeleteUser = async (userItem) => {
+    try {
+      const ok = window.confirm(`Delete resident ${userItem.name || userItem.email}? This cannot be undone.`)
+      if (!ok) return
+      let result = { success: false }
+      if (userItem.source === 'admin') {
+        result = await mongoService.deleteAdminResidentEntry(userItem.id)
+      } else {
+        result = await residentService.deleteResident(userItem.id)
+      }
+      if (result.success) {
+        setUsers(prev => prev.filter(u => u.id !== userItem.id))
+        setMessage({ type: 'success', text: 'Resident deleted successfully' })
+      } else {
+        setMessage({ type: 'error', text: result.error || 'Failed to delete resident' })
+      }
+    } catch (error) {
+      console.error('Error deleting user:', error)
+      setMessage({ type: 'error', text: error.message || 'Failed to delete resident' })
+    }
   }
 
   const handleSendCredentials = (staffUser) => {
@@ -403,6 +421,13 @@ const AdminUserManagementSimple = () => {
                           title={user.isRestricted ? 'Unrestrict' : 'Restrict'}
                         >
                           {user.isRestricted ? <CheckCircle className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(user)}
+                          className="text-red-600 hover:text-red-500"
+                          title="Delete resident"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </td>

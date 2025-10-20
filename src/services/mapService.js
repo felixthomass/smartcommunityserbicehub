@@ -23,11 +23,11 @@ export const mapService = {
           }
         }
         
-        // Fallback to mock data if API is not available
-        console.log('Using fallback mock data for residents map')
+        // No fallback to mock data - return empty array if API is not available
+        console.warn('Residents API not available, returning empty array')
         return { 
           success: true, 
-          data: this.generateMockResidentsData()
+          data: []
         }
       }
       
@@ -39,10 +39,10 @@ export const mapService = {
       }
     } catch (error) {
       console.error('Error fetching residents for map:', error)
-      // Fallback to mock data
+      // No fallback to mock data - return empty array on error
       return { 
         success: true, 
-        data: this.generateMockResidentsData()
+        data: []
       }
     }
   },
@@ -98,10 +98,10 @@ export const mapService = {
       const response = await fetch(`${API_BASE}/api/residents/flat/${building}/${flatNumber}`)
       
       if (!response.ok) {
-        // Fallback to mock data
+        // No fallback to mock data - return null if resident not found
         return { 
           success: true, 
-          data: this.generateMockResidentData(building, flatNumber)
+          data: null
         }
       }
       
@@ -109,10 +109,10 @@ export const mapService = {
       return { success: true, data: result.data }
     } catch (error) {
       console.error('Error fetching resident by flat:', error)
-      // Fallback to mock data
+      // No fallback to mock data - return null on error
       return { 
         success: true, 
-        data: this.generateMockResidentData(building, flatNumber)
+        data: null
       }
     }
   },
@@ -135,10 +135,14 @@ export const mapService = {
           }
         }
         
-        // Fallback to mock data
+        // No fallback to mock data - return empty stats
         return { 
           success: true, 
-          data: this.generateMockBuildingStats()
+          data: {
+            buildingA: { totalFlats: 0, occupiedFlats: 0, vacantFlats: 0, owners: 0, tenants: 0, restricted: 0 },
+            buildingB: { totalFlats: 0, occupiedFlats: 0, vacantFlats: 0, owners: 0, tenants: 0, restricted: 0 },
+            buildingC: { totalFlats: 0, occupiedFlats: 0, vacantFlats: 0, owners: 0, tenants: 0, restricted: 0 }
+          }
         }
       }
       
@@ -159,10 +163,14 @@ export const mapService = {
         console.error('Error calculating stats from residents:', e)
       }
       
-      // Fallback to mock data
+      // No fallback to mock data - return empty stats
       return { 
         success: true, 
-        data: this.generateMockBuildingStats()
+        data: {
+          buildingA: { totalFlats: 0, occupiedFlats: 0, vacantFlats: 0, owners: 0, tenants: 0, restricted: 0 },
+          buildingB: { totalFlats: 0, occupiedFlats: 0, vacantFlats: 0, owners: 0, tenants: 0, restricted: 0 },
+          buildingC: { totalFlats: 0, occupiedFlats: 0, vacantFlats: 0, owners: 0, tenants: 0, restricted: 0 }
+        }
       }
     }
   },
@@ -245,194 +253,4 @@ export const mapService = {
     return stats
   },
 
-  /**
-   * Generate mock residents data for fallback
-   * @returns {Array} Mock residents data
-   */
-  generateMockResidentsData() {
-    const residents = []
-    
-    // Building A - 4 floors, 6 flats per floor
-    for (let floor = 1; floor <= 4; floor++) {
-      for (let flat = 1; flat <= 6; flat++) {
-        const flatNumber = `${floor}${String(flat).padStart(2, '0')}`
-        residents.push({
-          _id: `resident_a_${flatNumber}`,
-          authUserId: `user_a_${flatNumber}`,
-          name: this.generateRandomName(),
-          email: `resident.a${flatNumber}@community.com`,
-          phone: this.generateRandomPhone(),
-          building: 'A',
-          flatNumber: flatNumber,
-          floor: floor,
-          ownerName: this.generateRandomName(),
-          isRestricted: Math.random() < 0.1, // 10% chance of being restricted
-          isOccupied: Math.random() < 0.85, // 85% occupancy rate
-          residentType: Math.random() < 0.7 ? 'owner' : 'tenant',
-          moveInDate: this.generateRandomDate(),
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${flatNumber}`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        })
-      }
-    }
-
-    // Building B - 3 floors, 4 flats per floor
-    for (let floor = 1; floor <= 3; floor++) {
-      for (let flat = 1; flat <= 4; flat++) {
-        const flatNumber = `${floor}${String(flat).padStart(2, '0')}`
-        residents.push({
-          _id: `resident_b_${flatNumber}`,
-          authUserId: `user_b_${flatNumber}`,
-          name: this.generateRandomName(),
-          email: `resident.b${flatNumber}@community.com`,
-          phone: this.generateRandomPhone(),
-          building: 'B',
-          flatNumber: flatNumber,
-          floor: floor,
-          ownerName: this.generateRandomName(),
-          isRestricted: Math.random() < 0.1,
-          isOccupied: Math.random() < 0.8, // 80% occupancy rate
-          residentType: Math.random() < 0.6 ? 'owner' : 'tenant',
-          moveInDate: this.generateRandomDate(),
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${flatNumber}`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        })
-      }
-    }
-
-    // Building C - 5 floors, 8 flats per floor
-    for (let floor = 1; floor <= 5; floor++) {
-      for (let flat = 1; flat <= 8; flat++) {
-        const flatNumber = `${floor}${String(flat).padStart(2, '0')}`
-        residents.push({
-          _id: `resident_c_${flatNumber}`,
-          authUserId: `user_c_${flatNumber}`,
-          name: this.generateRandomName(),
-          email: `resident.c${flatNumber}@community.com`,
-          phone: this.generateRandomPhone(),
-          building: 'C',
-          flatNumber: flatNumber,
-          floor: floor,
-          ownerName: this.generateRandomName(),
-          isRestricted: Math.random() < 0.05, // 5% chance of being restricted
-          isOccupied: Math.random() < 0.9, // 90% occupancy rate
-          residentType: Math.random() < 0.8 ? 'owner' : 'tenant',
-          moveInDate: this.generateRandomDate(),
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${flatNumber}`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        })
-      }
-    }
-
-    return residents
-  },
-
-  /**
-   * Generate mock resident data for a specific flat
-   * @param {string} building - Building ID
-   * @param {string} flatNumber - Flat number
-   * @returns {Object} Mock resident data
-   */
-  generateMockResidentData(building, flatNumber) {
-    return {
-      _id: `resident_${building.toLowerCase()}_${flatNumber}`,
-      authUserId: `user_${building.toLowerCase()}_${flatNumber}`,
-      name: this.generateRandomName(),
-      email: `resident.${building.toLowerCase()}${flatNumber}@community.com`,
-      phone: this.generateRandomPhone(),
-      building: building,
-      flatNumber: flatNumber,
-      floor: parseInt(flatNumber.charAt(0)),
-      ownerName: this.generateRandomName(),
-      isRestricted: Math.random() < 0.1,
-      isOccupied: Math.random() < 0.85,
-      residentType: Math.random() < 0.7 ? 'owner' : 'tenant',
-      moveInDate: this.generateRandomDate(),
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${flatNumber}`,
-      emergencyContact: {
-        name: this.generateRandomName(),
-        phone: this.generateRandomPhone(),
-        relationship: 'Family'
-      },
-      vehicleInfo: {
-        hasVehicle: Math.random() < 0.6,
-        vehicleNumber: Math.random() < 0.6 ? `MH${Math.floor(Math.random() * 100)}AB${Math.floor(Math.random() * 10000)}` : null,
-        parkingSlot: Math.random() < 0.6 ? `P${building}${Math.floor(Math.random() * 50)}` : null
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }
-  },
-
-  /**
-   * Generate mock building statistics
-   * @returns {Object} Building statistics
-   */
-  generateMockBuildingStats() {
-    return {
-      buildingA: {
-        totalFlats: 24,
-        occupiedFlats: 20,
-        vacantFlats: 4,
-        owners: 15,
-        tenants: 5,
-        restricted: 2
-      },
-      buildingB: {
-        totalFlats: 12,
-        occupiedFlats: 10,
-        vacantFlats: 2,
-        owners: 7,
-        tenants: 3,
-        restricted: 1
-      },
-      buildingC: {
-        totalFlats: 40,
-        occupiedFlats: 36,
-        vacantFlats: 4,
-        owners: 28,
-        tenants: 8,
-        restricted: 2
-      }
-    }
-  },
-
-  /**
-   * Generate random name
-   * @returns {string} Random name
-   */
-  generateRandomName() {
-    const firstNames = ['John', 'Jane', 'Michael', 'Sarah', 'David', 'Lisa', 'Robert', 'Emily', 'James', 'Jessica', 'William', 'Ashley', 'Richard', 'Amanda', 'Joseph', 'Jennifer', 'Thomas', 'Michelle', 'Christopher', 'Kimberly']
-    const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Hernandez', 'Lopez', 'Gonzalez', 'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin']
-    
-    const firstName = firstNames[Math.floor(Math.random() * firstNames.length)]
-    const lastName = lastNames[Math.floor(Math.random() * lastNames.length)]
-    
-    return `${firstName} ${lastName}`
-  },
-
-  /**
-   * Generate random phone number
-   * @returns {string} Random phone number
-   */
-  generateRandomPhone() {
-    const prefixes = ['+91 98765', '+91 98766', '+91 98767', '+91 98768', '+91 98769']
-    const prefix = prefixes[Math.floor(Math.random() * prefixes.length)]
-    const suffix = Math.floor(Math.random() * 100000).toString().padStart(5, '0')
-    return `${prefix} ${suffix}`
-  },
-
-  /**
-   * Generate random date within last 2 years
-   * @returns {string} Random date
-   */
-  generateRandomDate() {
-    const now = new Date()
-    const twoYearsAgo = new Date(now.getFullYear() - 2, now.getMonth(), now.getDate())
-    const randomTime = twoYearsAgo.getTime() + Math.random() * (now.getTime() - twoYearsAgo.getTime())
-    return new Date(randomTime).toISOString()
-  }
 }

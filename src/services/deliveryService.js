@@ -22,206 +22,20 @@ export const deliveryService = {
       })
       
       if (!response.ok) {
-        if (response.status === 404) {
-          // API endpoint doesn't exist, use local storage fallback
-          console.warn('Delivery API not available, using local storage fallback')
-          return this.createDeliveryLogLocal(deliveryData)
-        }
         throw new Error(`HTTP error! status: ${response.status}`)
       }
       
       const result = await response.json()
-
-      // Ensure resident gets real-time notification even when API is available
-      try {
-        const serverDelivery = result.data || {}
-        const enrichedDeliveryLog = {
-          // Prefer server-provided fields, fallback to submitted deliveryData
-          _id: serverDelivery._id || `delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          vendor: serverDelivery.vendor || deliveryData.vendor,
-          vendorId: serverDelivery.vendorId || deliveryData.vendorId,
-          flatNumber: serverDelivery.flatNumber || deliveryData.flatNumber,
-          building: serverDelivery.building || deliveryData.building,
-          residentName: serverDelivery.residentName || deliveryData.residentName,
-          agentName: serverDelivery.agentName || deliveryData.agentName,
-          agentPhone: serverDelivery.agentPhone || deliveryData.agentPhone,
-          trackingId: serverDelivery.trackingId || deliveryData.trackingId,
-          packageDescription: serverDelivery.packageDescription || deliveryData.packageDescription,
-          deliveryTime: serverDelivery.deliveryTime || deliveryData.deliveryTime || new Date().toISOString(),
-          status: serverDelivery.status || deliveryData.status || 'delivered',
-          createdAt: serverDelivery.createdAt || new Date().toISOString(),
-          updatedAt: serverDelivery.updatedAt || new Date().toISOString()
-        }
-        // Fire local notification + custom event for resident dashboards
-        this.createDeliveryNotification(enrichedDeliveryLog)
-      } catch (notifyErr) {
-        console.warn('Delivery created on server, but local notification dispatch failed:', notifyErr)
-      }
-
+      console.log('✅ Delivery log created in MongoDB:', result.data)
       return { success: true, data: result.data }
     } catch (error) {
       console.error('Error creating delivery log:', error)
-      // Fallback to local storage if API fails
-      if (error.message.includes('404') || error.message.includes('Failed to fetch')) {
-        console.warn('Using local storage fallback for delivery log')
-        return this.createDeliveryLogLocal(deliveryData)
-      }
       return { success: false, error: error.message }
     }
   },
 
-  /**
-   * Create delivery log entry in local storage (fallback)
-   * @param {Object} deliveryData - Delivery information
-   * @returns {Promise<Object>} Creation result
-   */
-  createDeliveryLogLocal(deliveryData) {
-    try {
-      const deliveryLog = {
-        _id: `delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        ...deliveryData,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }
 
-      // Get existing deliveries from localStorage
-      const existingDeliveries = JSON.parse(localStorage.getItem('deliveryLogs') || '[]')
-      
-      // Add new delivery
-      existingDeliveries.unshift(deliveryLog)
-      
-      // Keep only last 1000 deliveries
-      const recentDeliveries = existingDeliveries.slice(0, 1000)
-      
-      // Save to localStorage
-      localStorage.setItem('deliveryLogs', JSON.stringify(recentDeliveries))
-      
-      // Create notification for resident
-      this.createDeliveryNotification(deliveryLog)
-      
-      console.log('✅ Delivery logged to local storage:', deliveryLog)
-      return { success: true, data: deliveryLog }
-    } catch (error) {
-      console.error('Error saving delivery to local storage:', error)
-      return { success: false, error: 'Failed to save delivery log locally' }
-    }
-  },
 
-  /**
-   * Create notification for resident about delivery
-   * @param {Object} deliveryLog - Delivery log data
-   */
-  createDeliveryNotification(deliveryLog) {
-    try {
-      const notification = {
-        _id: `notification_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: 'delivery',
-        title: '📦 Package Delivered',
-        message: `Your ${deliveryLog.vendor} package has been delivered to ${deliveryLog.building}-${deliveryLog.flatNumber}`,
-        details: {
-          vendor: deliveryLog.vendor,
-          packageDescription: deliveryLog.packageDescription,
-          agentName: deliveryLog.agentName,
-          deliveryTime: deliveryLog.deliveryTime,
-          trackingId: deliveryLog.trackingId,
-          deliveryId: deliveryLog._id
-        },
-        recipient: {
-          type: 'resident',
-          flatNumber: deliveryLog.flatNumber,
-          building: deliveryLog.building,
-          residentName: deliveryLog.residentName
-        },
-        status: 'unread',
-        priority: 'medium',
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // 7 days
-      }
-
-      // Get existing notifications from localStorage
-      const existingNotifications = JSON.parse(localStorage.getItem('notifications') || '[]')
-      
-      // Add new notification
-      existingNotifications.unshift(notification)
-      
-      // Keep only last 1000 notifications
-      const recentNotifications = existingNotifications.slice(0, 1000)
-      
-      // Save to localStorage
-      localStorage.setItem('notifications', JSON.stringify(recentNotifications))
-      
-      // Also create a resident-specific notification
-      this.createResidentNotification(deliveryLog, notification)
-      
-      console.log('✅ Delivery notification created:', notification)
-      
-      // Show browser notification if permission granted
-      this.showBrowserNotification(notification)
-      
-    } catch (error) {
-      console.error('Error creating delivery notification:', error)
-    }
-  },
-
-  /**
-   * Create resident-specific notification
-   * @param {Object} deliveryLog - Delivery log data
-   * @param {Object} notification - Base notification
-   */
-  createResidentNotification(deliveryLog, notification) {
-    try {
-      // Normalize building/flatNumber (handle cases like flatNumber "A-101")
-      let normalizedBuilding = (deliveryLog.building || '').toString().trim()
-      let normalizedFlat = (deliveryLog.flatNumber || '').toString().trim()
-      if (normalizedFlat.includes('-')) {
-        const [maybeBuilding, maybeFlat] = normalizedFlat.split('-')
-        if (!normalizedBuilding) normalizedBuilding = maybeBuilding
-        if (maybeFlat) normalizedFlat = maybeFlat
-      }
-
-      const residentNotification = {
-        _id: `resident_notification_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        ...notification,
-        recipientId: `${normalizedBuilding}-${normalizedFlat}`,
-        recipientName: deliveryLog.residentName,
-        category: 'delivery',
-        actions: [
-          {
-            id: 'view_details',
-            label: 'View Details',
-            type: 'button',
-            action: 'view_delivery'
-          },
-          {
-            id: 'mark_received',
-            label: 'Mark as Received',
-            type: 'button',
-            action: 'mark_received'
-          }
-        ]
-      }
-
-      // Save resident-specific notification
-      const key = `resident_notifications_${normalizedBuilding}_${normalizedFlat}`
-      const residentNotifications = JSON.parse(localStorage.getItem(key) || '[]')
-      residentNotifications.unshift(residentNotification)
-      localStorage.setItem(key, JSON.stringify(residentNotifications))
-      
-      // Trigger custom event to notify other tabs/components
-      console.log('🚀 Dispatching delivery notification event for:', deliveryLog.building, deliveryLog.flatNumber)
-      window.dispatchEvent(new CustomEvent('deliveryNotificationCreated', {
-        detail: {
-          building: deliveryLog.building,
-          flatNumber: deliveryLog.flatNumber,
-          notification: residentNotification
-        }
-      }))
-      console.log('✅ Delivery notification event dispatched')
-      
-    } catch (error) {
-      console.error('Error creating resident notification:', error)
-    }
-  },
 
   /**
    * Show browser notification
@@ -261,32 +75,35 @@ export const deliveryService = {
   },
 
   /**
-   * Get notifications for a specific resident
+   * Get notifications for a specific resident from MongoDB
    * @param {string} building - Building name
    * @param {string} flatNumber - Flat number
    * @returns {Array} Resident notifications
    */
-  getResidentNotifications(building, flatNumber) {
+  async getResidentNotifications(building, flatNumber) {
     try {
-      // Normalize inputs to match writer
-      let normalizedBuilding = (building || '').toString().trim()
-      let normalizedFlat = (flatNumber || '').toString().trim()
-      if (normalizedFlat.includes('-')) {
-        const [maybeBuilding, maybeFlat] = normalizedFlat.split('-')
-        if (!normalizedBuilding) normalizedBuilding = maybeBuilding
-        if (maybeFlat) normalizedFlat = maybeFlat
+      // Find the resident by building and flat number
+      const response = await fetch(`${API_BASE}/api/residents/flat/${building}/${flatNumber}`)
+      if (!response.ok) {
+        console.log('Resident not found for notifications')
+        return []
       }
-      const key = `resident_notifications_${normalizedBuilding}_${normalizedFlat}`
-      console.log('🔑 Looking for notifications with key:', key)
-      const rawData = localStorage.getItem(key)
-      console.log('📄 Raw localStorage data:', rawData)
-      const notifications = JSON.parse(rawData || '[]')
-      console.log('📋 Parsed notifications:', notifications)
-      const filteredNotifications = notifications.filter(notification => 
-        new Date(notification.expiresAt) > new Date()
-      )
-      console.log('✅ Filtered notifications:', filteredNotifications)
-      return filteredNotifications
+      
+      const residentResult = await response.json()
+      const resident = residentResult.data
+      
+      if (!resident?.authUserId) {
+        return []
+      }
+
+      // Get notifications for this resident
+      const notificationResponse = await fetch(`${API_BASE}/api/notifications/user/${resident.authUserId}?type=delivery`)
+      if (!notificationResponse.ok) {
+        return []
+      }
+      
+      const notificationResult = await notificationResponse.json()
+      return notificationResult.data?.notifications || []
     } catch (error) {
       console.error('Error getting resident notifications:', error)
       return []
@@ -294,22 +111,50 @@ export const deliveryService = {
   },
 
   /**
-   * Mark notification as read
+   * Mark notification as read in MongoDB
    * @param {string} notificationId - Notification ID
-   * @param {string} building - Building name
-   * @param {string} flatNumber - Flat number
+   * @param {string} building - Building name (not used, kept for compatibility)
+   * @param {string} flatNumber - Flat number (not used, kept for compatibility)
    */
-  markNotificationAsRead(notificationId, building, flatNumber) {
+  async markNotificationAsRead(notificationId, building, flatNumber) {
     try {
-      const notifications = JSON.parse(localStorage.getItem(`resident_notifications_${building}_${flatNumber}`) || '[]')
-      const updatedNotifications = notifications.map(notification => 
-        notification._id === notificationId 
-          ? { ...notification, status: 'read', readAt: new Date().toISOString() }
-          : notification
-      )
-      localStorage.setItem(`resident_notifications_${building}_${flatNumber}`, JSON.stringify(updatedNotifications))
+      const response = await fetch(`${API_BASE}/api/notifications/${notificationId}/read`, {
+        method: 'PUT'
+      })
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      
+      console.log('✅ Notification marked as read in MongoDB:', notificationId)
+      return true
     } catch (error) {
       console.error('Error marking notification as read:', error)
+      return false
+    }
+  },
+
+  /**
+   * Delete a specific notification from MongoDB
+   * @param {string} notificationId - Notification ID
+   * @param {string} building - Building name (not used, kept for compatibility)
+   * @param {string} flatNumber - Flat number (not used, kept for compatibility)
+   */
+  async deleteNotification(notificationId, building, flatNumber) {
+    try {
+      const response = await fetch(`${API_BASE}/api/notifications/${notificationId}`, {
+        method: 'DELETE'
+      })
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      
+      console.log('✅ Delivery notification deleted from MongoDB:', notificationId)
+      return true
+    } catch (error) {
+      console.error('Error deleting notification:', error)
+      return false
     }
   },
 
@@ -334,23 +179,14 @@ export const deliveryService = {
       const response = await fetch(url)
       
       if (!response.ok) {
-        if (response.status === 404) {
-          // API endpoint doesn't exist, use local storage fallback
-          console.warn('Delivery API not available, using local storage fallback')
-          return this.getDeliveryLogsLocal(filters)
-        }
         throw new Error(`HTTP error! status: ${response.status}`)
       }
       
       const result = await response.json()
+      console.log('✅ Delivery logs fetched from MongoDB:', result.data?.length || 0, 'logs')
       return { success: true, data: result.data || result.deliveries || [] }
     } catch (error) {
       console.error('Error fetching delivery logs:', error)
-      // Fallback to local storage if API fails
-      if (error.message.includes('404') || error.message.includes('Failed to fetch')) {
-        console.warn('Using local storage fallback for delivery logs')
-        return this.getDeliveryLogsLocal(filters)
-      }
       return { success: false, error: error.message, data: [] }
     }
   },
@@ -388,59 +224,6 @@ export const deliveryService = {
     }
   },
 
-  /**
-   * Get delivery logs from local storage (fallback)
-   * @param {Object} filters - Filter options
-   * @returns {Promise<Object>} Delivery logs
-   */
-  getDeliveryLogsLocal(filters = {}) {
-    try {
-      const allDeliveries = JSON.parse(localStorage.getItem('deliveryLogs') || '[]')
-      let filteredDeliveries = [...allDeliveries]
-
-      // Apply filters
-      if (filters.vendor) {
-        filteredDeliveries = filteredDeliveries.filter(delivery => 
-          delivery.vendor?.toLowerCase().includes(filters.vendor.toLowerCase())
-        )
-      }
-
-      if (filters.flatNumber) {
-        filteredDeliveries = filteredDeliveries.filter(delivery => 
-          delivery.flatNumber?.toLowerCase().includes(filters.flatNumber.toLowerCase())
-        )
-      }
-
-      if (filters.status && filters.status !== 'all') {
-        filteredDeliveries = filteredDeliveries.filter(delivery => 
-          delivery.status === filters.status
-        )
-      }
-
-      if (filters.agentName) {
-        filteredDeliveries = filteredDeliveries.filter(delivery => 
-          delivery.agentName?.toLowerCase().includes(filters.agentName.toLowerCase())
-        )
-      }
-
-      if (filters.date) {
-        const filterDate = new Date(filters.date).toDateString()
-        filteredDeliveries = filteredDeliveries.filter(delivery =>
-          new Date(delivery.deliveryTime).toDateString() === filterDate
-        )
-      }
-
-      // Apply limit
-      if (filters.limit) {
-        filteredDeliveries = filteredDeliveries.slice(0, parseInt(filters.limit))
-      }
-
-      return { success: true, data: filteredDeliveries }
-    } catch (error) {
-      console.error('Error reading delivery logs from local storage:', error)
-      return { success: false, error: error.message, data: [] }
-    }
-  },
 
   /**
    * Get common delivery vendors
@@ -600,11 +383,6 @@ export const deliveryService = {
       const response = await fetch(url)
       
       if (!response.ok) {
-        if (response.status === 404) {
-          // API endpoint doesn't exist, use local storage fallback
-          console.warn('Delivery stats API not available, using local storage fallback')
-          return this.getDeliveryStatsLocal(dateRange)
-        }
         throw new Error(`HTTP error! status: ${response.status}`)
       }
       
@@ -612,70 +390,10 @@ export const deliveryService = {
       return { success: true, data: result.data }
     } catch (error) {
       console.error('Error fetching delivery stats:', error)
-      // Fallback to local storage if API fails
-      if (error.message.includes('404') || error.message.includes('Failed to fetch')) {
-        console.warn('Using local storage fallback for delivery stats')
-        return this.getDeliveryStatsLocal(dateRange)
-      }
       return { success: false, error: error.message, data: null }
     }
   },
 
-  /**
-   * Get delivery statistics from local storage (fallback)
-   * @param {Object} dateRange - Date range for statistics
-   * @returns {Promise<Object>} Statistics
-   */
-  getDeliveryStatsLocal(dateRange = {}) {
-    try {
-      const allDeliveries = JSON.parse(localStorage.getItem('deliveryLogs') || '[]')
-      const today = new Date()
-      const todayString = today.toDateString()
-
-      // Filter deliveries for today
-      const todayDeliveries = allDeliveries.filter(delivery => {
-        const deliveryDate = new Date(delivery.deliveryTime || delivery.createdAt)
-        return deliveryDate.toDateString() === todayString
-      })
-
-      // Calculate stats
-      const stats = {
-        totalToday: todayDeliveries.length,
-        deliveredToday: todayDeliveries.filter(d => d.status === 'delivered').length,
-        pendingToday: todayDeliveries.filter(d => d.status === 'pending').length,
-        failedToday: todayDeliveries.filter(d => d.status === 'failed').length,
-        vendorBreakdown: {},
-        hourlyBreakdown: {}
-      }
-
-      // Vendor breakdown
-      todayDeliveries.forEach(delivery => {
-        const vendor = delivery.vendor || 'Unknown'
-        stats.vendorBreakdown[vendor] = (stats.vendorBreakdown[vendor] || 0) + 1
-      })
-
-      // Hourly breakdown
-      todayDeliveries.forEach(delivery => {
-        const hour = new Date(delivery.deliveryTime || delivery.createdAt).getHours()
-        stats.hourlyBreakdown[hour] = (stats.hourlyBreakdown[hour] || 0) + 1
-      })
-
-      return { success: true, data: stats }
-    } catch (error) {
-      console.error('Error calculating delivery stats from local storage:', error)
-      return { 
-        success: true, 
-        data: {
-          totalToday: 0,
-          deliveredToday: 0,
-          pendingToday: 0,
-          failedToday: 0,
-          vendorBreakdown: {},
-          hourlyBreakdown: {}
-        }
-      }
-    }
-  },
 
   /**
    * Blacklist/whitelist delivery agent
@@ -771,87 +489,4 @@ export const deliveryService = {
     }
   },
 
-  /**
-   * Create sample delivery data for demo purposes
-   * @returns {Object} Creation result
-   */
-  createSampleDeliveries() {
-    try {
-      const sampleDeliveries = [
-        {
-          _id: `delivery_${Date.now() - 3600000}_sample1`,
-          vendor: 'Swiggy',
-          vendorId: 'swiggy',
-          flatNumber: 'A-101',
-          building: 'A',
-          residentName: 'John Smith',
-          agentName: 'Rajesh Kumar',
-          agentPhone: '+91 98765 43210',
-          trackingId: 'SW123456789',
-          packageDescription: 'Food Order - Biryani & Curry',
-          deliveryNotes: 'Hot food delivery',
-          status: 'delivered',
-          deliveryTime: new Date(Date.now() - 3600000).toISOString(),
-          securityOfficer: 'Security Guard',
-          createdAt: new Date(Date.now() - 3600000).toISOString(),
-          updatedAt: new Date(Date.now() - 3600000).toISOString()
-        },
-        {
-          _id: `delivery_${Date.now() - 7200000}_sample2`,
-          vendor: 'Amazon',
-          vendorId: 'amazon',
-          flatNumber: 'A-102',
-          building: 'A',
-          residentName: 'Sarah Johnson',
-          agentName: 'Priya Sharma',
-          agentPhone: '+91 98765 43211',
-          trackingId: 'AM987654321',
-          packageDescription: 'Electronics - Bluetooth Headphones',
-          deliveryNotes: 'Fragile package',
-          status: 'delivered',
-          deliveryTime: new Date(Date.now() - 7200000).toISOString(),
-          securityOfficer: 'Security Guard',
-          createdAt: new Date(Date.now() - 7200000).toISOString(),
-          updatedAt: new Date(Date.now() - 7200000).toISOString()
-        },
-        {
-          _id: `delivery_${Date.now() - 1800000}_sample3`,
-          vendor: 'Zomato',
-          vendorId: 'zomato',
-          flatNumber: 'B-201',
-          building: 'B',
-          residentName: 'Mike Wilson',
-          agentName: 'Amit Singh',
-          agentPhone: '+91 98765 43212',
-          trackingId: 'ZM456789123',
-          packageDescription: 'Food Order - Pizza & Pasta',
-          deliveryNotes: 'Vegetarian food',
-          status: 'delivered',
-          deliveryTime: new Date(Date.now() - 1800000).toISOString(),
-          securityOfficer: 'Security Guard',
-          createdAt: new Date(Date.now() - 1800000).toISOString(),
-          updatedAt: new Date(Date.now() - 1800000).toISOString()
-        }
-      ]
-
-      // Get existing deliveries from localStorage
-      const existingDeliveries = JSON.parse(localStorage.getItem('deliveryLogs') || '[]')
-      
-      // Add sample deliveries (avoid duplicates)
-      const existingIds = new Set(existingDeliveries.map(d => d._id))
-      const newSampleDeliveries = sampleDeliveries.filter(d => !existingIds.has(d._id))
-      
-      if (newSampleDeliveries.length > 0) {
-        const updatedDeliveries = [...newSampleDeliveries, ...existingDeliveries]
-        localStorage.setItem('deliveryLogs', JSON.stringify(updatedDeliveries))
-        console.log(`✅ Added ${newSampleDeliveries.length} sample deliveries`)
-        return { success: true, data: { count: newSampleDeliveries.length } }
-      } else {
-        return { success: true, data: { count: 0, message: 'Sample deliveries already exist' } }
-      }
-    } catch (error) {
-      console.error('Error creating sample deliveries:', error)
-      return { success: false, error: error.message }
-    }
-  }
 }

@@ -48,6 +48,7 @@ import { mongoService } from '../../services/mongoService'
 import { passService } from '../../services/passService'
 import { notificationService } from '../../services/notificationService'
 import { enhancedResidentService } from '../../services/enhancedResidentService'
+import { residentService } from '../../services/residentService'
 import { deliveryService } from '../../services/deliveryService'
 import { showSuccess, showError, showConfirm, showWarning, notify } from '../../utils/sweetAlert'
 
@@ -319,45 +320,56 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     }
   }
 
-  // Load residents for directory
+  // Load residents for directory - only show admin-created residents
   const loadResidents = async () => {
     setResidentsLoading(true)
     try {
-      const result = await enhancedResidentService.getAllResidents({ 
-        sortBy: 'flatNumber', 
-        sortOrder: 'asc' 
-      })
-      if (result.success) {
-        setResidents(result.data)
+      console.log('🔄 Loading admin-created residents...')
+      
+      // Use the same approach as AdminUserManagementSimple - get admin resident entries
+      const res = await mongoService.getAdminResidentEntries?.()
+      if (res?.success) {
+        // Process and format residents from AdminAddResidents
+        const formattedResidents = (res.data || []).map(resident => ({
+          ...resident,
+          authUserId: resident.authUserId || resident._id,
+          building: resident.building,
+          flatNumber: resident.flatNumber,
+          name: resident.name,
+          email: resident.email,
+          phone: resident.phone,
+          isOwner: resident.isOwner || false,
+          kycVerified: resident.kycVerified || false,
+          isRestricted: resident.isRestricted || false,
+          aadharNumber: resident.aadharNumber,
+          // Mark as admin added for identification
+          adminAdded: true
+        }))
+
+        console.log('✅ Loaded admin-created residents:', formattedResidents.length, 'residents')
+        console.log('📋 Admin-created residents data:', formattedResidents)
+        setResidents(formattedResidents)
+        
+        // Debug: Log first few residents to understand data structure
+        if (formattedResidents.length > 0) {
+          console.log('🔍 Sample resident data structure:', formattedResidents.slice(0, 2))
+        }
       } else {
-        console.error('Failed to load residents:', result.error)
-        // Fallback to mock data for demo purposes
-        setResidents(getMockResidents())
+        console.warn('⚠️ No admin-created residents found')
+        console.log('🔄 Showing empty list - create residents using AdminAddResidents first')
+        // Show empty list instead of mock data
+        setResidents([])
       }
     } catch (error) {
-      console.error('Error loading residents:', error)
-      // Fallback to mock data for demo purposes
-      setResidents(getMockResidents())
+      console.error('❌ Error loading admin-created residents:', error)
+      console.log('🔄 Showing empty list')
+      // Show empty list instead of mock data
+      setResidents([])
     } finally {
       setResidentsLoading(false)
     }
   }
 
-  // Mock residents data for demo purposes
-  const getMockResidents = () => [
-    { authUserId: 'mock1', name: 'John Smith', building: 'A', flatNumber: '101', phone: '+91 98765 43210', email: 'john@example.com' },
-    { authUserId: 'mock2', name: 'Sarah Johnson', building: 'A', flatNumber: '102', phone: '+91 98765 43211', email: 'sarah@example.com' },
-    { authUserId: 'mock3', name: 'Mike Wilson', building: 'A', flatNumber: '201', phone: '+91 98765 43212', email: 'mike@example.com' },
-    { authUserId: 'mock4', name: 'Emily Davis', building: 'A', flatNumber: '202', phone: '+91 98765 43213', email: 'emily@example.com' },
-    { authUserId: 'mock5', name: 'David Brown', building: 'B', flatNumber: '101', phone: '+91 98765 43214', email: 'david@example.com' },
-    { authUserId: 'mock6', name: 'Lisa Anderson', building: 'B', flatNumber: '102', phone: '+91 98765 43215', email: 'lisa@example.com' },
-    { authUserId: 'mock7', name: 'Robert Taylor', building: 'B', flatNumber: '201', phone: '+91 98765 43216', email: 'robert@example.com' },
-    { authUserId: 'mock8', name: 'Jennifer Martinez', building: 'B', flatNumber: '202', phone: '+91 98765 43217', email: 'jennifer@example.com' },
-    { authUserId: 'mock9', name: 'Michael Garcia', building: 'C', flatNumber: '101', phone: '+91 98765 43218', email: 'michael@example.com' },
-    { authUserId: 'mock10', name: 'Amanda Rodriguez', building: 'C', flatNumber: '102', phone: '+91 98765 43219', email: 'amanda@example.com' },
-    { authUserId: 'mock11', name: 'Christopher Lee', building: 'C', flatNumber: '201', phone: '+91 98765 43220', email: 'chris@example.com' },
-    { authUserId: 'mock12', name: 'Jessica White', building: 'C', flatNumber: '202', phone: '+91 98765 43221', email: 'jessica@example.com' }
-  ]
 
   // Load building statistics
   const loadBuildingStats = async () => {
@@ -464,14 +476,18 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     // Search filter
     if (residentSearchTerm) {
       const searchLower = residentSearchTerm.toLowerCase()
-      filtered = filtered.filter(resident =>
-        resident.name?.toLowerCase().includes(searchLower) ||
-        resident.flatNumber?.toLowerCase().includes(searchLower) ||
-        resident.phone?.includes(residentSearchTerm) ||
-        resident.email?.toLowerCase().includes(searchLower) ||
-        resident.building?.toLowerCase().includes(searchLower) ||
-        resident.ownerName?.toLowerCase().includes(searchLower)
-      )
+      filtered = filtered.filter(resident => {
+        // Check if search term matches building-flat format (e.g., "A-101")
+        const buildingFlat = `${resident.building}-${resident.flatNumber}`.toLowerCase()
+        
+        return resident.name?.toLowerCase().includes(searchLower) ||
+               resident.flatNumber?.toLowerCase().includes(searchLower) ||
+               resident.phone?.includes(residentSearchTerm) ||
+               resident.email?.toLowerCase().includes(searchLower) ||
+               resident.building?.toLowerCase().includes(searchLower) ||
+               resident.ownerName?.toLowerCase().includes(searchLower) ||
+               buildingFlat.includes(searchLower)
+      })
     }
 
     // Building filter
@@ -481,10 +497,10 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
 
     // Owner/Tenant filter
     if (residentFilters.ownersOnly) {
-      filtered = filtered.filter(resident => resident.ownerName && resident.name !== resident.ownerName)
+      filtered = filtered.filter(resident => resident.isOwner === true)
     }
     if (residentFilters.tenantsOnly) {
-      filtered = filtered.filter(resident => !resident.ownerName || resident.name === resident.ownerName)
+      filtered = filtered.filter(resident => resident.isOwner === false)
     }
 
     // KYC filter
@@ -497,6 +513,14 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       filtered = filtered.filter(resident => resident.isRestricted === residentFilters.restricted)
     }
 
+    console.log('🔍 Filtering residents:', {
+      total: residents.length,
+      filtered: filtered.length,
+      searchTerm: residentSearchTerm,
+      buildingFilter: residentFilters.building,
+      sample: filtered.slice(0, 3)
+    })
+    
     setFilteredResidents(filtered)
   }
 
@@ -753,7 +777,9 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   }
 
   const handleFlatSelection = (flat) => {
+    console.log('🏠 Flat selected:', flat)
     setQuickDeliveryForm({ ...quickDeliveryForm, selectedFlat: flat })
+    console.log('📝 Updated form state:', { ...quickDeliveryForm, selectedFlat: flat })
   }
 
   const handleAgentNameChange = async (agentName) => {
@@ -785,7 +811,17 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const handleQuickDeliverySubmit = async (e) => {
     e.preventDefault()
     
+    console.log('🚀 Submitting delivery form:', {
+      selectedVendor: quickDeliveryForm.selectedVendor,
+      selectedFlat: quickDeliveryForm.selectedFlat,
+      form: quickDeliveryForm
+    })
+    
     if (!quickDeliveryForm.selectedVendor || !quickDeliveryForm.selectedFlat) {
+      console.error('❌ Missing required information:', {
+        vendor: !!quickDeliveryForm.selectedVendor,
+        flat: !!quickDeliveryForm.selectedFlat
+      })
       showError('Missing Information', 'Please select both vendor and flat.')
       return
     }
@@ -819,6 +855,37 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           } catch (error) {
             console.warn('Proof photo upload failed, but delivery was logged:', error)
           }
+        }
+
+        // Send notification to resident via notification service
+        try {
+          const notificationData = {
+            userId: quickDeliveryForm.selectedFlat.authUserId || quickDeliveryForm.selectedFlat._id,
+            title: '📦 Package Delivered',
+            message: `Your ${quickDeliveryForm.selectedVendor.name} package has been delivered to ${quickDeliveryForm.selectedFlat.building}-${quickDeliveryForm.selectedFlat.flatNumber}`,
+            type: 'delivery',
+            priority: 'medium',
+            metadata: {
+              deliveryId: result.data._id,
+              vendor: quickDeliveryForm.selectedVendor.name,
+              packageDescription: quickDeliveryForm.packageDescription,
+              agentName: quickDeliveryForm.agentName,
+              agentPhone: quickDeliveryForm.agentPhone,
+              trackingId: quickDeliveryForm.trackingId,
+              deliveryTime: deliveryData.deliveryTime,
+              building: quickDeliveryForm.selectedFlat.building,
+              flatNumber: quickDeliveryForm.selectedFlat.flatNumber,
+              residentName: quickDeliveryForm.selectedFlat.name,
+              actionUrl: '/deliveries'
+            }
+          }
+          
+          console.log('📤 Sending delivery notification to resident:', notificationData)
+          await notificationService.createNotification(notificationData)
+          console.log('✅ Delivery notification sent successfully')
+        } catch (notificationError) {
+          console.warn('⚠️ Failed to send delivery notification via API:', notificationError)
+          // Don't fail the entire operation if notification fails
         }
 
         // Check if delivery was saved locally (indicated by _id starting with 'delivery_')
@@ -868,7 +935,38 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       const result = await deliveryService.createBulkDeliveries(bulkDeliveries)
       
       if (result.success) {
-        showSuccess('Bulk Deliveries Logged!', `${bulkDeliveries.length} deliveries have been successfully logged.`)
+        // Send notifications for each delivery
+        for (const delivery of bulkDeliveries) {
+          try {
+            const notificationData = {
+              userId: delivery.residentUserId || delivery.authUserId,
+              title: '📦 Package Delivered',
+              message: `Your ${delivery.vendor} package has been delivered to ${delivery.building}-${delivery.flatNumber}`,
+              type: 'delivery',
+              priority: 'medium',
+              metadata: {
+                deliveryId: delivery._id || `bulk_delivery_${Date.now()}`,
+                vendor: delivery.vendor,
+                packageDescription: delivery.packageDescription,
+                agentName: delivery.agentName,
+                agentPhone: delivery.agentPhone,
+                trackingId: delivery.trackingId,
+                deliveryTime: delivery.deliveryTime,
+                building: delivery.building,
+                flatNumber: delivery.flatNumber,
+                residentName: delivery.residentName,
+                actionUrl: '/deliveries'
+              }
+            }
+            
+            console.log('📤 Sending bulk delivery notification:', notificationData)
+            await notificationService.createNotification(notificationData)
+          } catch (notificationError) {
+            console.warn('⚠️ Failed to send notification for bulk delivery:', notificationError)
+          }
+        }
+        
+        showSuccess('Bulk Deliveries Logged!', `${bulkDeliveries.length} deliveries have been successfully logged and notifications sent to residents.`)
         setBulkDeliveries([])
         setBulkDeliveryMode(false)
         loadDeliveryLogs()
@@ -1573,18 +1671,21 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
             <div>
               <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Step 2: Select Flat</h4>
               
-              {/* Load residents if not already loaded */}
-              {residents.length === 0 && !residentsLoading && (
-                <div className="mb-4">
-                  <button
-                    onClick={loadResidents}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
-                  >
-                    <Users className="w-4 h-4" />
-                    Load Residents
-                  </button>
-                </div>
-              )}
+              {/* Load residents if not already loaded or refresh button */}
+              <div className="mb-4 flex gap-2">
+                <button
+                  onClick={loadResidents}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  <Users className="w-4 h-4" />
+                  {residents.length === 0 ? 'Load Admin Residents' : 'Refresh Admin Residents'}
+                </button>
+                {residents.length > 0 && (
+                  <span className="flex items-center text-sm text-gray-600 dark:text-gray-400">
+                    📊 {residents.length} admin-created residents loaded
+                  </span>
+                )}
+              </div>
 
               {residentsLoading ? (
                 <div className="text-center py-8">
@@ -1594,8 +1695,8 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
               ) : filteredResidents.length === 0 ? (
                 <div className="text-center py-8">
                   <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                  <p className="text-gray-600 dark:text-gray-400">No residents found</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">Click "Load Residents" to fetch resident data</p>
+                  <p className="text-gray-600 dark:text-gray-400">No admin-created residents found</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">Create residents using AdminAddResidents first, then click "Load Admin Residents"</p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -1615,26 +1716,54 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                     {/* Quick Filter Buttons */}
                     <div className="flex gap-2 flex-wrap">
                       <button
-                        onClick={() => setResidentSearchTerm('')}
-                        className="px-3 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                        onClick={() => {
+                          setResidentSearchTerm('')
+                          setResidentFilters({...residentFilters, building: ''})
+                        }}
+                        className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                          !residentFilters.building && !residentSearchTerm
+                            ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
                       >
                         All Residents
                       </button>
                       <button
-                        onClick={() => setResidentSearchTerm('A-')}
-                        className="px-3 py-1 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded-full hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
+                        onClick={() => {
+                          setResidentSearchTerm('')
+                          setResidentFilters({...residentFilters, building: 'A'})
+                        }}
+                        className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                          residentFilters.building === 'A'
+                            ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
                       >
                         Building A
                       </button>
                       <button
-                        onClick={() => setResidentSearchTerm('B-')}
-                        className="px-3 py-1 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-full hover:bg-green-200 dark:hover:bg-green-900/50 transition-colors"
+                        onClick={() => {
+                          setResidentSearchTerm('')
+                          setResidentFilters({...residentFilters, building: 'B'})
+                        }}
+                        className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                          residentFilters.building === 'B'
+                            ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
                       >
                         Building B
                       </button>
                       <button
-                        onClick={() => setResidentSearchTerm('C-')}
-                        className="px-3 py-1 text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded-full hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors"
+                        onClick={() => {
+                          setResidentSearchTerm('')
+                          setResidentFilters({...residentFilters, building: 'C'})
+                        }}
+                        className={`px-3 py-1 text-xs rounded-full transition-colors ${
+                          residentFilters.building === 'C'
+                            ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
                       >
                         Building C
                       </button>
@@ -1912,8 +2041,28 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       {/* Search and Filters */}
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Resident Directory</h3>
+          <div>
+            <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Admin Created Residents</h3>
+            {residents.length > 0 && (
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                📊 {residents.length} admin-created residents • {filteredResidents.length} shown
+              </p>
+            )}
+            {residents.length === 0 && !residentsLoading && (
+              <p className="text-sm text-orange-600 dark:text-orange-400 mt-1">
+                ⚠️ No residents found. Create residents using AdminAddResidents first.
+              </p>
+            )}
+          </div>
           <div className="flex gap-2">
+            <button
+              onClick={loadResidents}
+              disabled={residentsLoading}
+              className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <Users className="w-4 h-4" />
+              {residentsLoading ? 'Loading...' : 'Refresh'}
+            </button>
             <button
               onClick={() => setScanMode(!scanMode)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
@@ -2083,7 +2232,10 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         ) : filteredResidents.length === 0 ? (
           <div className="text-center py-8">
             <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-600 dark:text-gray-400">No residents found</p>
+            <p className="text-gray-600 dark:text-gray-400">No admin-created residents found</p>
+            <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">
+              Create residents using the AdminAddResidents feature first
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2116,6 +2268,19 @@ const SecurityDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                       <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
                         <Shield className="w-3 h-3 mr-1" />
                         KYC Verified
+                      </span>
+                    )}
+                    {resident.isOwner && (
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400">
+                        <Home className="w-3 h-3 mr-1" />
+                        Owner
+                      </span>
+                    )}
+                    {/* Show if resident was created via AdminAddResidents */}
+                    {resident.adminAdded && (
+                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/20 dark:text-purple-400">
+                        <User className="w-3 h-3 mr-1" />
+                        Admin Created
                       </span>
                     )}
                   </div>

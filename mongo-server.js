@@ -1,5 +1,6 @@
 // MongoDB API server for visitor logs
 import express from 'express'
+import { createHmac } from 'crypto'
 import mongoose from 'mongoose'
 import cors from 'cors'
 import multer from 'multer'
@@ -152,7 +153,18 @@ const residentEntrySchema = new mongoose.Schema({
   aadharUrl: { type: String },
   isOwner: { type: Boolean, default: false },
   verified: { type: Boolean, default: false },
-  supabaseUserId: { type: String }
+  supabaseUserId: { type: String },
+  // Verification fee payment tracking
+  verificationFeePaid: { type: Boolean, default: false },
+  verificationPayment: {
+    orderId: { type: String },
+    paymentId: { type: String },
+    signature: { type: String },
+    amount: { type: Number }, // in paise
+    currency: { type: String, default: 'INR' },
+    status: { type: String, enum: ['created', 'paid', 'failed'], default: 'created' },
+    paidAt: { type: Date }
+  }
 }, { timestamps: true })
 
 const ResidentEntry = mongoose.model('ResidentEntry', residentEntrySchema)
@@ -323,6 +335,78 @@ app.get('/api/visitors/:id', async (req, res) => {
 })
 
 // ===== BILL MANAGEMENT ROUTES =====
+// ===== SIMPLE MONTHLY FEE ROUTES =====
+
+// Set or update the global monthly fee (admin)
+app.post('/api/monthly-fee', async (req, res) => {
+  try {
+    const { amount, currency = 'INR', notes = '', adminId = '' } = req.body || {}
+    if (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0) {
+      return res.status(400).json({ success: false, error: 'Valid amount is required' })
+    }
+    const doc = await MonthlyFee.findOneAndUpdate({}, {
+      amount: Number(amount), currency, notes, updatedBy: adminId || 'admin', updatedAt: new Date()
+    }, { upsert: true, new: true, setDefaultsOnInsert: true })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error setting monthly fee:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get current monthly fee
+app.get('/api/monthly-fee', async (_req, res) => {
+  try {
+    const doc = await MonthlyFee.findOne({})
+    if (!doc) return res.json({ success: true, data: { amount: 0, currency: 'INR', notes: '' } })
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error fetching monthly fee:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Record monthly fee payment for a resident for a given month (YYYY-MM)
+app.post('/api/monthly-fee/pay', async (req, res) => {
+  try {
+    const { residentId, month, amount } = req.body || {}
+    if (!residentId || !month) return res.status(400).json({ success: false, error: 'residentId and month required' })
+    const fee = await MonthlyFee.findOne({})
+    const expected = Number(amount ?? fee?.amount ?? 0)
+    const txnId = 'MF_' + month + '_' + residentId + '_' + Date.now().toString(36)
+    const pay = new Payment({
+      billId: new mongoose.Types.ObjectId(),
+      residentId,
+      residentName: '',
+      residentEmail: '',
+      amount: expected,
+      paymentMethod: 'card',
+      transactionId: txnId,
+      status: 'completed',
+      billTitle: `Monthly Fee ${month}`,
+      category: 'maintenance',
+      dueDate: undefined
+    })
+    await pay.save()
+    res.json({ success: true, data: { transactionId: txnId, payment: pay } })
+  } catch (error) {
+    console.error('❌ Error recording monthly fee payment:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get a resident's monthly fee payment status/history
+app.get('/api/monthly-fee/status/:residentId', async (req, res) => {
+  try {
+    const { residentId } = req.params
+    const payments = await Payment.find({ residentId, billTitle: { $regex: '^Monthly Fee ' } }).sort({ paidAt: -1 })
+    const fee = await MonthlyFee.findOne({})
+    res.json({ success: true, data: { fee, payments } })
+  } catch (error) {
+    console.error('❌ Error fetching monthly fee status:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
 
 // Bill Schema
 const billSchema = new mongoose.Schema({
@@ -382,12 +466,23 @@ const paymentSchema = new mongoose.Schema({
   status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'completed' },
   billTitle: { type: String, default: '' },
   category: { type: String, default: '' },
+  month: { type: String, default: '' }, // YYYY-MM for monthly fee
   dueDate: { type: Date },
   paidAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
 })
 
 const Payment = mongoose.model('Payment', paymentSchema)
+
+// Monthly Fee Schema (single document storing current monthly amount and optional notes)
+const monthlyFeeSchema = new mongoose.Schema({
+  amount: { type: Number, required: true }, // in INR
+  currency: { type: String, default: 'INR' },
+  updatedBy: { type: String, default: '' },
+  updatedAt: { type: Date, default: Date.now },
+  notes: { type: String, default: '' }
+})
+const MonthlyFee = mongoose.model('MonthlyFee', monthlyFeeSchema)
 
 // Notification Schema
 const notificationSchema = new mongoose.Schema({
@@ -1183,7 +1278,44 @@ app.post('/api/residents', async (req, res) => {
 // List all residents
 app.get('/api/residents', async (req, res) => {
   try {
-    const residents = await Resident.find({}).sort({ createdAt: -1 })
+    const [residentsColl, adminEntries] = await Promise.all([
+      Resident.find({}).sort({ createdAt: -1 }).lean(),
+      ResidentEntry.find({}).sort({ createdAt: -1 }).lean()
+    ])
+
+    // Map ResidentEntry (admin) into resident-like objects for global visibility
+    const projectedAdmin = (adminEntries || []).map(e => ({
+      _id: e._id,
+      authUserId: e.supabaseUserId || null,
+      name: e.name || '',
+      email: e.email || '',
+      phone: e.phone || '',
+      ownerName: e.isOwner ? e.name : '',
+      flatNumber: e.flatNumber || '',
+      building: e.building || '',
+      isRestricted: e.isRestricted || false,
+      residentType: e.isOwner ? 'owner' : 'tenant',
+      createdAt: e.createdAt,
+      updatedAt: e.updatedAt,
+    }))
+
+    // Merge by authUserId if present, otherwise by email+building+flat
+    const keyOf = r => r.authUserId || `${(r.email||'').toLowerCase()}|${r.building}|${r.flatNumber}`
+    const mergedMap = new Map()
+    for (const r of projectedAdmin) {
+      mergedMap.set(keyOf(r), r)
+    }
+    for (const r of (residentsColl || [])) {
+      const k = keyOf(r)
+      if (!mergedMap.has(k)) mergedMap.set(k, r)
+      else {
+        // Prefer real resident doc (with authUserId) but keep building/flat/name from admin when missing
+        const existing = mergedMap.get(k)
+        mergedMap.set(k, { ...existing, ...r, building: r.building || existing.building, flatNumber: r.flatNumber || existing.flatNumber })
+      }
+    }
+
+    const residents = Array.from(mergedMap.values())
     res.json({ success: true, residents })
   } catch (error) {
     console.error('❌ Error listing residents:', error)
@@ -1280,6 +1412,35 @@ app.get('/api/admin/resident-entries', async (_req, res) => {
   }
 })
 
+// Alias to match frontend usage: /api/residents/flat/:building/:flatNumber
+app.get('/api/residents/flat/:building/:flatNumber', async (req, res) => {
+  try {
+    const { building, flatNumber } = req.params
+    // Prefer admin-managed entries (ResidentEntry)
+    const adminDoc = await ResidentEntry.findOne({ building, flatNumber }).lean()
+    if (adminDoc) return res.json({ success: true, data: adminDoc })
+    // Fallback to Residents collection
+    const residentDoc = await Resident.findOne({ building, flatNumber }).lean()
+    if (!residentDoc) return res.status(404).json({ success: false, error: 'Resident not found' })
+    res.json({ success: true, data: residentDoc })
+  } catch (error) {
+    console.error('❌ Error fetching resident by flat:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Delete a single admin-managed resident entry
+app.delete('/api/admin/resident-entries/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const result = await ResidentEntry.deleteOne({ _id: id })
+    res.json({ success: true, data: { deleted: result.deletedCount } })
+  } catch (error) {
+    console.error('❌ Error deleting resident entry:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 // Danger: Delete all resident profiles (self-registered profiles)
 app.delete('/api/resident-profiles', async (_req, res) => {
   try {
@@ -1361,6 +1522,141 @@ app.post('/api/residents/verify', async (req, res) => {
     return res.json({ success: true, data: { verified: false, reason: 'Details do not match' } })
   } catch (error) {
     console.error('❌ Error verifying resident:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// ===== Razorpay Payment for Verification =====
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_R79jO6N4F99QLG'
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'HgKjdH7mCViwebMQTIFmbx7R'
+
+// Create Razorpay order for verification fee (amount in paise)
+app.post('/api/payments/razorpay/order', async (req, res) => {
+  try {
+    const { amount = 500000, currency = 'INR', receipt, notes, supabaseUserId } = req.body || {}
+    if (!supabaseUserId) return res.status(400).json({ success: false, error: 'supabaseUserId required' })
+
+    // Razorpay constraint: receipt length <= 40
+    const baseReceipt = receipt || `verify_${(supabaseUserId||'user').slice(-8)}_${Date.now().toString(36)}`
+    const safeReceipt = baseReceipt.slice(0, 40)
+
+    const orderPayload = {
+      amount: Number(amount),
+      currency,
+      receipt: safeReceipt,
+      notes: { purpose: 'resident_verification_fee', supabaseUserId, ...(notes || {}) }
+    }
+
+    const authHeader = 'Basic ' + Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')
+    const resp = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+      body: JSON.stringify(orderPayload)
+    })
+    if (!resp.ok) {
+      const text = await resp.text()
+      throw new Error(`Razorpay order failed: ${resp.status} ${text}`)
+    }
+    const order = await resp.json()
+
+    // Optionally stash order id on ResidentEntry for traceability
+    await ResidentEntry.updateOne({ supabaseUserId }, { $set: { verificationPayment: { orderId: order.id, amount: order.amount, currency: order.currency, status: order.status || 'created' } } })
+
+    res.json({ success: true, data: { order, keyId: RAZORPAY_KEY_ID } })
+  } catch (error) {
+    console.error('❌ Razorpay order error:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Verify Razorpay payment signature and mark verification paid
+app.post('/api/payments/razorpay/verify', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, supabaseUserId, month, type } = req.body || {}
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !supabaseUserId) {
+      return res.status(400).json({ success: false, error: 'Missing payment verification fields' })
+    }
+
+    const hmac = createHmac('sha256', RAZORPAY_KEY_SECRET)
+    hmac.update(razorpay_order_id + '|' + razorpay_payment_id)
+    const expectedSignature = hmac.digest('hex')
+    const isValid = expectedSignature === razorpay_signature
+    if (!isValid) return res.status(400).json({ success: false, error: 'Invalid signature' })
+
+    // If this is a monthly fee payment, enforce rules and record a Payment row
+    if (type === 'monthly_fee' && month) {
+      // Prevent paying more than 2 months in advance
+      const [y, m] = String(month).split('-').map(Number)
+      if (!y || !m) return res.status(400).json({ success: false, error: 'Invalid month format' })
+      const selected = new Date(y, m - 1, 1)
+      const now = new Date()
+      const max = new Date(now.getFullYear(), now.getMonth() + 2, 1) // up to 2 months ahead
+      if (selected > max) return res.status(400).json({ success: false, error: 'Cannot pay more than 2 months in advance' })
+
+      // Prevent duplicate month payment
+      const existing = await Payment.findOne({ residentId: supabaseUserId, billTitle: `Monthly Fee ${month}` })
+      if (existing) return res.status(409).json({ success: false, error: 'Monthly fee already paid for this month' })
+
+      // Determine amount (in paise) from MonthlyFee settings
+      const fee = await MonthlyFee.findOne({})
+      const amountPaise = Math.max(0, Number((fee?.amount ?? 0))) * 100
+      const txnId = razorpay_payment_id
+      // enrich resident info
+      const residentDoc = await Resident.findOne({ authUserId: supabaseUserId })
+      const residentName = residentDoc?.name || ''
+      const residentEmail = residentDoc?.email || ''
+      const payDoc = new Payment({
+        billId: new mongoose.Types.ObjectId(),
+        residentId: supabaseUserId,
+        residentName,
+        residentEmail,
+        amount: amountPaise,
+        paymentMethod: 'card',
+        transactionId: txnId,
+        status: 'completed',
+        billTitle: `Monthly Fee ${month}`,
+        category: 'monthly_fee',
+        month
+      })
+      await payDoc.save()
+
+      return res.json({ success: true, data: { paid: true, type: 'monthly_fee', month, payment: payDoc } })
+    }
+
+    const entry = await ResidentEntry.findOneAndUpdate(
+      { supabaseUserId },
+      {
+        $set: {
+          verificationFeePaid: true,
+          verificationPayment: {
+            orderId: razorpay_order_id,
+            paymentId: razorpay_payment_id,
+            signature: razorpay_signature,
+            status: 'paid',
+            paidAt: new Date()
+          }
+        }
+      },
+      { new: true }
+    )
+    if (!entry) return res.status(404).json({ success: false, error: 'Resident entry not found' })
+
+    // Upsert into Residents collection for dashboard access
+    const resident = await Resident.findOneAndUpdate(
+      { authUserId: supabaseUserId },
+      {
+        name: entry.name,
+        email: entry.email,
+        flatNumber: entry.flatNumber,
+        building: entry.building,
+        updatedAt: Date.now()
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    )
+
+    res.json({ success: true, data: { verified: true, paid: true, resident } })
+  } catch (error) {
+    console.error('❌ Razorpay verify error:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })

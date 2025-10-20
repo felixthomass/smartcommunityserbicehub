@@ -134,6 +134,22 @@ export const mongoService = {
     }
   },
 
+  // Admin: delete a resident entry created via Admin panel
+  deleteAdminResidentEntry: async (id) => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/admin/resident-entries/${id}`, { method: 'DELETE' })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to delete resident entry: ${response.status} ${errorText}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('❌ Error deleting admin resident entry:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
   // Admin: set restriction flag on resident entry
   setAdminResidentEntryRestriction: async (id, isRestricted) => {
     return mongoService.updateAdminResidentEntry(id, { isRestricted })

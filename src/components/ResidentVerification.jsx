@@ -3,6 +3,7 @@ import { aadharService } from '../services/aadharService'
 import { residentService } from '../services/residentService'
 import { mongoService } from '../services/mongoService'
 import { showSuccess, showError } from '../utils/sweetAlert'
+import { paymentService } from '../services/paymentService'
 
 const ResidentVerification = ({ user, onVerified }) => {
   const [form, setForm] = useState({
@@ -106,6 +107,20 @@ const ResidentVerification = ({ user, onVerified }) => {
     try {
       setVerifying(true)
 
+      // Require that this user exists in admin-provided ResidentEntry data
+      try {
+        const adminRes = await mongoService.getAdminResidentEntries?.()
+        const adminMatch = (adminRes?.data || []).find(r =>
+          (r.email || '').toLowerCase() === form.email.toLowerCase() &&
+          (r.building || '') === form.building &&
+          (r.flatNumber || '') === form.flatNumber
+        )
+        if (!adminMatch) {
+          showError('Not Found', 'Your details are not present in admin records. Contact admin.')
+          return
+        }
+      } catch {}
+
       // Upload Aadhar image to Supabase
       let aadharUrl = ''
       if (form.aadharImage) {
@@ -116,7 +131,7 @@ const ResidentVerification = ({ user, onVerified }) => {
         aadharUrl = uploadResult.data.publicUrl
       }
 
-      // Verify with backend
+      // Verify with backend (uses admin ResidentEntry records)
       const verifyResult = await residentService.verifyResident({
         email: form.email,
         name: form.name,
@@ -127,9 +142,46 @@ const ResidentVerification = ({ user, onVerified }) => {
       })
 
       if (verifyResult.success && verifyResult.data.verified) {
-        // Navigate immediately to resident dashboard without waiting on any modal/toast
-        onVerified(verifyResult.data.resident)
-        showSuccess('Verification successful! You can now access the resident dashboard.')
+        // Create Razorpay order for verification fee (5000 INR)
+        const orderResp = await paymentService.createVerificationOrder({ supabaseUserId: user.id, amountPaise: 500000 })
+        if (!orderResp?.success) throw new Error(orderResp?.error || 'Failed to create payment order')
+        const { order, keyId } = orderResp.data
+
+        // Open Razorpay Checkout
+        await new Promise((resolve, reject) => {
+          const options = {
+            key: keyId,
+            amount: order.amount,
+            currency: order.currency,
+            name: 'Community Service',
+            description: 'Resident Verification Fee',
+            order_id: order.id,
+            prefill: { name: form.name, email: form.email },
+            handler: async function (response) {
+              try {
+                const verify = await paymentService.verifyPayment({
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature,
+                  supabaseUserId: user.id
+                })
+                if (verify?.success) {
+                  showSuccess('Verification & payment successful! Access granted.')
+                  onVerified(verify.data.resident)
+                  resolve()
+                } else {
+                  showError('Payment verification failed', verify?.error || 'Please try again.')
+                  reject(new Error('Payment verification failed'))
+                }
+              } catch (err) {
+                reject(err)
+              }
+            },
+            modal: { ondismiss: () => reject(new Error('Payment cancelled')) }
+          }
+          const rzp = new window.Razorpay(options)
+          rzp.open()
+        })
       } else {
         showError('Verification failed', verifyResult.data?.reason || 'Details do not match our records')
       }

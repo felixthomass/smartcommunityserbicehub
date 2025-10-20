@@ -32,7 +32,7 @@ const Sidebar = ({ user, currentPage, setCurrentPage, isCollapsed, setIsCollapse
       { id: 'dashboard', label: 'Dashboard', icon: Home },
       { id: 'admin-users', label: 'User Management', icon: Users },
       { id: 'staff-security', label: 'Staff/Security', icon: Shield },
-      { id: 'maintenance', label: 'Bill Management', icon: CreditCard },
+      { id: 'monthly-fee', label: 'Monthly Fee', icon: CreditCard },
       { id: 'visitors', label: 'Visitor Management', icon: QrCode },
       { id: 'complaints', label: 'Complaints', icon: FileText },
       { id: 'notifications', label: 'Notifications', icon: Bell },
