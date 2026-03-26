@@ -19,11 +19,24 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     // Get initial session
     const getSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.user) {
-        await loadUserProfile(session.user)
+      try {
+        console.log('Fetching initial session...')
+        const { data: { session }, error } = await supabase.auth.getSession()
+        
+        if (error) {
+          console.error('Supabase session error:', error)
+        } else if (session?.user) {
+          console.log('Session found for:', session.user.email)
+          await loadUserProfile(session.user)
+        } else {
+          console.log('No active session found')
+        }
+      } catch (err) {
+        console.error('Failed to get session:', err)
+      } finally {
+        console.log('Auth initialization complete')
+        setLoading(false)
       }
-      setLoading(false)
     }
 
     getSession()
@@ -49,7 +62,15 @@ export const AuthProvider = ({ children }) => {
       }
     )
 
-    return () => subscription.unsubscribe()
+    // Safety timeout: ensure loading state is cleared even if Supabase hangs
+    const safetyTimeout = setTimeout(() => {
+      setLoading(false)
+    }, 5000)
+
+    return () => {
+      subscription.unsubscribe()
+      clearTimeout(safetyTimeout)
+    }
   }, [])
 
   const loadUserProfile = async (authUser) => {
@@ -65,7 +86,8 @@ export const AuthProvider = ({ children }) => {
       staffDepartment: authUser.user_metadata?.staff_department || null,
       phone: authUser.user_metadata?.phone || '',
       flatNumber: authUser.user_metadata?.flat_number || '',
-      building: authUser.user_metadata?.building || ''
+      building: authUser.user_metadata?.building || '',
+      profilePicture: authUser.user_metadata?.profile_picture || authUser.user_metadata?.photo_url || null
     })
 
     // Log user role for debugging (only when user changes)

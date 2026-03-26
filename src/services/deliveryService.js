@@ -7,7 +7,7 @@ const API_BASE = API_BASE_URL
  * Handles delivery logs, vendor management, and delivery agent tracking
  */
 export const deliveryService = {
-  
+
   /**
    * Create a new delivery log entry
    * @param {Object} deliveryData - Delivery information
@@ -20,16 +20,38 @@ export const deliveryService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(deliveryData)
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       console.log('✅ Delivery log created in MongoDB:', result.data)
       return { success: true, data: result.data }
     } catch (error) {
       console.error('Error creating delivery log:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Delete a delivery log entry
+   * @param {string} deliveryId - ID of the delivery to delete
+   * @returns {Promise<Object>} Deletion result
+   */
+  async deleteDeliveryLog(deliveryId) {
+    try {
+      const response = await fetch(`${API_BASE}/api/deliveries/${deliveryId}`, {
+        method: 'DELETE'
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      return { success: true }
+    } catch (error) {
+      console.error('Error deleting delivery log:', error)
       return { success: false, error: error.message }
     }
   },
@@ -88,10 +110,10 @@ export const deliveryService = {
         console.log('Resident not found for notifications')
         return []
       }
-      
+
       const residentResult = await response.json()
       const resident = residentResult.data
-      
+
       if (!resident?.authUserId) {
         return []
       }
@@ -101,7 +123,7 @@ export const deliveryService = {
       if (!notificationResponse.ok) {
         return []
       }
-      
+
       const notificationResult = await notificationResponse.json()
       return notificationResult.data?.notifications || []
     } catch (error) {
@@ -121,11 +143,11 @@ export const deliveryService = {
       const response = await fetch(`${API_BASE}/api/notifications/${notificationId}/read`, {
         method: 'PUT'
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       console.log('✅ Notification marked as read in MongoDB:', notificationId)
       return true
     } catch (error) {
@@ -145,11 +167,11 @@ export const deliveryService = {
       const response = await fetch(`${API_BASE}/api/notifications/${notificationId}`, {
         method: 'DELETE'
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       console.log('✅ Delivery notification deleted from MongoDB:', notificationId)
       return true
     } catch (error) {
@@ -166,7 +188,7 @@ export const deliveryService = {
   async getDeliveryLogs(filters = {}) {
     try {
       const params = new URLSearchParams()
-      
+
       if (filters.date) params.append('date', filters.date)
       if (filters.vendor) params.append('vendor', filters.vendor)
       if (filters.flatNumber) params.append('flatNumber', filters.flatNumber)
@@ -174,14 +196,14 @@ export const deliveryService = {
       if (filters.agentName) params.append('agentName', filters.agentName)
       if (filters.limit) params.append('limit', filters.limit)
       if (filters.offset) params.append('offset', filters.offset)
-      
+
       const url = `${API_BASE}/api/deliveries${params.toString() ? '?' + params.toString() : ''}`
       const response = await fetch(url)
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       console.log('✅ Delivery logs fetched from MongoDB:', result.data?.length || 0, 'logs')
       return { success: true, data: result.data || result.deliveries || [] }
@@ -200,7 +222,7 @@ export const deliveryService = {
     // building is not a server filter yet, but kept for future or client-side
     const result = await this.getDeliveryLogs(filters)
     if (result.success && building) {
-      result.data = (result.data || []).filter(d => (d.building||'').toLowerCase() === (building||'').toLowerCase())
+      result.data = (result.data || []).filter(d => (d.building || '').toLowerCase() === (building || '').toLowerCase())
     }
     return result
   },
@@ -230,33 +252,51 @@ export const deliveryService = {
    * @returns {Promise<Object>} Vendor list
    */
   async getVendors() {
+    const defaultVendors = [
+      { id: 'swiggy', name: 'Swiggy', icon: '🍔', color: '#FF6B6B' },
+      { id: 'zomato', name: 'Zomato', icon: '🍕', color: '#FF4757' },
+      { id: 'amazon', name: 'Amazon', icon: '📦', color: '#FF9500' },
+      { id: 'flipkart', name: 'Flipkart', icon: '🛒', color: '#007AFF' },
+      { id: 'dunzo', name: 'Dunzo', icon: '🚚', color: '#34C759' },
+      { id: 'bigbasket', name: 'BigBasket', icon: '🥬', color: '#5AC8FA' },
+      { id: 'grofers', name: 'Grofers', icon: '🛍️', color: '#AF52DE' },
+      { id: 'uber-eats', name: 'Uber Eats', icon: '🍜', color: '#000000' },
+      { id: 'foodpanda', name: 'Foodpanda', icon: '🐼', color: '#D0021B' },
+      { id: 'other', name: 'Other', icon: '📦', color: '#8E8E93' }
+    ]
+
     try {
       const response = await fetch(`${API_BASE}/api/deliveries/vendors`)
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
-      return { success: true, data: result.data || result.vendors || [] }
+      const apiVendors = result.data || result.vendors || []
+
+      // Merge unique vendors, prioritizing API data for matches
+      const mergedVendors = [...defaultVendors]
+
+      apiVendors.forEach(apiV => {
+        const index = mergedVendors.findIndex(dv => dv.name.toLowerCase() === apiV.name?.toLowerCase())
+        if (index === -1) {
+          mergedVendors.push({
+            id: apiV.id || apiV._id || apiV.name?.toLowerCase() || 'other',
+            name: apiV.name || 'Other',
+            icon: apiV.icon || '📦',
+            color: apiV.color || '#8E8E93'
+          })
+        } else {
+          // Update existing with potential extra data from API
+          mergedVendors[index] = { ...mergedVendors[index], ...apiV }
+        }
+      })
+
+      return { success: true, data: mergedVendors }
     } catch (error) {
       console.error('Error fetching vendors:', error)
-      // Return default vendors if API fails
-      return { 
-        success: true, 
-        data: [
-          { id: 'swiggy', name: 'Swiggy', icon: '🍔', color: '#FF6B6B' },
-          { id: 'zomato', name: 'Zomato', icon: '🍕', color: '#FF4757' },
-          { id: 'amazon', name: 'Amazon', icon: '📦', color: '#FF9500' },
-          { id: 'flipkart', name: 'Flipkart', icon: '🛒', color: '#007AFF' },
-          { id: 'dunzo', name: 'Dunzo', icon: '🚚', color: '#34C759' },
-          { id: 'bigbasket', name: 'BigBasket', icon: '🥬', color: '#5AC8FA' },
-          { id: 'grofers', name: 'Grofers', icon: '🛍️', color: '#AF52DE' },
-          { id: 'uber-eats', name: 'Uber Eats', icon: '🍜', color: '#000000' },
-          { id: 'foodpanda', name: 'Foodpanda', icon: '🐼', color: '#D0021B' },
-          { id: 'other', name: 'Other', icon: '📦', color: '#8E8E93' }
-        ]
-      }
+      return { success: true, data: defaultVendors }
     }
   },
 
@@ -268,7 +308,7 @@ export const deliveryService = {
   async getFrequentAgents(vendorId) {
     try {
       const response = await fetch(`${API_BASE}/api/deliveries/agents/${vendorId}`)
-      
+
       if (!response.ok) {
         if (response.status === 404) {
           // Endpoint not implemented on backend; gracefully degrade with empty list
@@ -276,7 +316,7 @@ export const deliveryService = {
         }
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data || [] }
     } catch (error) {
@@ -297,11 +337,11 @@ export const deliveryService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentName })
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {
@@ -324,15 +364,65 @@ export const deliveryService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, ...additionalData })
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {
       console.error('Error updating delivery status:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Notify resident about delivery (Transitions status to 'Waiting Pickup')
+   * @param {string} deliveryId - Delivery ID
+   * @returns {Promise<Object>} Result
+   */
+  async notifyResident(deliveryId) {
+    try {
+      const response = await fetch(`${API_BASE}/api/deliveries/${deliveryId}/notify`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('Error notifying resident:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Complete delivery (Transitions status to 'Delivered')
+   * @param {string} deliveryId - Delivery ID
+   * @param {string} status - Completion status (default 'Delivered')
+   * @returns {Promise<Object>} Result
+   */
+  async completeDelivery(deliveryId, status = 'Delivered') {
+    try {
+      const response = await fetch(`${API_BASE}/api/deliveries/${deliveryId}/complete`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('Error completing delivery:', error)
       return { success: false, error: error.message }
     }
   },
@@ -348,16 +438,16 @@ export const deliveryService = {
       const formData = new FormData()
       formData.append('photo', photoFile)
       formData.append('deliveryId', deliveryId)
-      
+
       const response = await fetch(`${API_BASE}/api/deliveries/${deliveryId}/proof`, {
         method: 'POST',
         body: formData
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {
@@ -374,18 +464,18 @@ export const deliveryService = {
   async getDeliveryStats(dateRange = {}) {
     try {
       const params = new URLSearchParams()
-      
+
       if (dateRange.start) params.append('start', dateRange.start)
       if (dateRange.end) params.append('end', dateRange.end)
       if (dateRange.period) params.append('period', dateRange.period) // 'day', 'week', 'month'
-      
+
       const url = `${API_BASE}/api/deliveries/stats${params.toString() ? '?' + params.toString() : ''}`
       const response = await fetch(url)
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {
@@ -410,11 +500,11 @@ export const deliveryService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentName, agentPhone, blacklisted, reason })
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {
@@ -430,11 +520,11 @@ export const deliveryService = {
   async getBlacklistedAgents() {
     try {
       const response = await fetch(`${API_BASE}/api/deliveries/agents/blacklisted`)
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data || [] }
     } catch (error) {
@@ -455,11 +545,11 @@ export const deliveryService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deliveries })
       })
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {
@@ -476,11 +566,11 @@ export const deliveryService = {
   async searchByTrackingId(trackingId) {
     try {
       const response = await fetch(`${API_BASE}/api/deliveries/search/${encodeURIComponent(trackingId)}`)
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
-      
+
       const result = await response.json()
       return { success: true, data: result.data }
     } catch (error) {

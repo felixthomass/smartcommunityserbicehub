@@ -54,7 +54,7 @@ import AdminDashboard from './components/dashboards/AdminDashboard'
 import StaffDashboard from './components/dashboards/StaffDashboard'
 import SecurityDashboard from './components/dashboards/SecurityDashboard'
 import StorageTest from './components/StorageTest'
-
+import VisitorAccess from './pages/VisitorAccess';
 
 const AppContent = () => {
   const { user, loading, logout } = useAuth()
@@ -70,6 +70,9 @@ const AppContent = () => {
       window.location.hash.includes('access_token=') ||
       window.location.hash.includes('error=')
     ))
+
+  // Allow routing to the public visitor access page (before auth redirect)
+  const isVisitorPage = window.location.pathname.startsWith('/visitor/access');
 
   useEffect(() => {
     // Apply dark mode to document
@@ -97,6 +100,11 @@ const AppContent = () => {
     return <AuthCallback />
   }
 
+  // Handle visitor pass public page
+  if (isVisitorPage) {
+    return <VisitorAccess />
+  }
+
   // If no user, show landing page or login
   if (!user) {
     return (
@@ -122,15 +130,15 @@ const AppContent = () => {
   const getDashboard = () => {
     switch (user.role) {
       case 'resident':
-        return <ResidentDashboard user={user} onLogout={logout} currentPage={currentPage} />
+        return <ResidentDashboard user={user} onLogout={logout} currentPage={currentPage} setCurrentPage={setCurrentPage} />
       case 'admin':
-        return <AdminDashboard user={user} onLogout={logout} currentPage={currentPage} />
+        return <AdminDashboard user={user} onLogout={logout} currentPage={currentPage} setCurrentPage={setCurrentPage} />
       case 'staff':
-        return <StaffDashboard user={user} onLogout={logout} currentPage={currentPage} />
+        return <StaffDashboard user={user} onLogout={logout} currentPage={currentPage} setCurrentPage={setCurrentPage} />
       case 'security':
-        return <SecurityDashboard user={user} onLogout={logout} currentPage={currentPage} />
+        return <SecurityDashboard user={user} onLogout={logout} currentPage={currentPage} setCurrentPage={setCurrentPage} />
       default:
-        return <ResidentDashboard user={user} onLogout={logout} currentPage={currentPage} />
+        return <ResidentDashboard user={user} onLogout={logout} currentPage={currentPage} setCurrentPage={setCurrentPage} />
     }
   }
 
@@ -171,13 +179,7 @@ const App = () => {
   // Test mode first - uncomment this to test basic functionality
   // return <TestApp />
 
-  return (
-    <AuthProvider>
-      <ThemeProvider>
-        <AppContent />
-      </ThemeProvider>
-    </AuthProvider>
-  )
+  return <AppContent />
 }
 
 export default App

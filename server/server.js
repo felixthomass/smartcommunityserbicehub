@@ -58,6 +58,14 @@ const residentSchema = new mongoose.Schema({
   ownerName: { type: String, default: '' },
   flatNumber: { type: String, default: '' },
   building: { type: String, default: '' },
+  employeeId: { type: String, default: '' },
+  securityRole: { type: String, default: '' },
+  shiftTiming: { type: String, default: '' },
+  assignedGate: { type: String, default: '' },
+  employmentStatus: { type: String, default: '' },
+  joiningDate: { type: String, default: '' },
+  emergencyContact: { type: String, default: '' },
+  address: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })
@@ -289,10 +297,10 @@ app.get('/api/residents/:authUserId', async (req, res) => {
 // Create or update resident profile
 app.post('/api/residents', async (req, res) => {
   try {
-    const { authUserId, name, email, phone, ownerName, flatNumber, building } = req.body
+    const { authUserId, name, email, phone, ownerName, flatNumber, building, employeeId, securityRole, shiftTiming, assignedGate, employmentStatus, joiningDate, emergencyContact, address } = req.body
     if (!authUserId) return res.status(400).json({ success: false, error: 'authUserId is required' })
 
-    const update = { name, email, phone, ownerName, flatNumber, building, updatedAt: Date.now() }
+    const update = { name, email, phone, ownerName, flatNumber, building, employeeId, securityRole, shiftTiming, assignedGate, employmentStatus, joiningDate, emergencyContact, address, updatedAt: Date.now() }
     const options = { new: true, upsert: true, setDefaultsOnInsert: true }
     const resident = await Resident.findOneAndUpdate({ authUserId }, update, options)
 

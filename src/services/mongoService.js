@@ -310,6 +310,32 @@ export const mongoService = {
   },
 
   /**
+   * Quick checkout visitor (sets status to checked_out and exitTime to now)
+   */
+  checkoutVisitor: async (visitorId) => {
+    try {
+      const response = await fetch(`${MONGO_API_URL}/api/visitors/checkout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ visitor_id: visitorId })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Checkout failed: ${response.status} ${errorText}`)
+      }
+
+      const result = await response.json()
+      return { success: true, data: result.data || result }
+    } catch (error) {
+      console.error('❌ Error checking out visitor:', error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
    * Upload visitor document/photo (simplified version)
    */
   uploadDocument: async (file, visitorId, documentType = 'id_proof') => {
@@ -329,12 +355,18 @@ export const mongoService = {
         console.log('✅ Supabase upload successful:', uploadResult.data.publicUrl)
 
         // Update visitor log in MongoDB with document URL
-        const updateResult = await mongoService.updateVisitorLog(visitorId, {
-          documentPhoto: uploadResult.data.publicUrl,
-          documentPath: uploadResult.data.path
-        })
+      const updateData = {}
+      if (documentType === 'visitor_photo') {
+        updateData.visitorPhoto = uploadResult.data.publicUrl
+        updateData.visitorPhotoPath = uploadResult.data.path
+      } else {
+        updateData.documentPhoto = uploadResult.data.publicUrl
+        updateData.documentPath = uploadResult.data.path
+      }
 
-        if (updateResult.success) {
+      const updateResult = await mongoService.updateVisitorLog(visitorId, updateData)
+
+      if (updateResult.success) {
           console.log('✅ Visitor log updated with document URL')
           return {
             success: true,
@@ -478,6 +510,41 @@ export const mongoService = {
     } catch (error) {
       console.error('Error fetching visitor stats:', error)
       return { success: true, data: { totalVisitors: 0, checkedIn: 0, checkedOut: 0 } }
+    }
+  },
+
+  /**
+   * Get visitor analytics for today (totals, hourly chart, flats, types)
+   */
+  getVisitorAnalytics: async () => {
+    try {
+      const healthCheck = await fetch(`${MONGO_API_URL}/api/health`).catch(() => null)
+      if (!healthCheck || !healthCheck.ok) {
+        return {
+          success: true,
+          data: {
+            totalToday: 0, currentlyInside: 0, checkedOut: 0,
+            peakHour: 0, peakHourLabel: 'No visitors yet',
+            hourlyActivity: [], mostVisitedFlats: [], visitorTypeDistribution: []
+          }
+        }
+      }
+      const response = await fetch(`${MONGO_API_URL}/api/security/visitor-analytics`)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch visitor analytics: ${response.status} ${response.statusText}`)
+      }
+      const result = await response.json()
+      return { success: true, data: result.data }
+    } catch (error) {
+      console.error('Error fetching visitor analytics:', error)
+      return {
+        success: true,
+        data: {
+          totalToday: 0, currentlyInside: 0, checkedOut: 0,
+          peakHour: 0, peakHourLabel: 'No visitors yet',
+          hourlyActivity: [], mostVisitedFlats: [], visitorTypeDistribution: []
+        }
+      }
     }
   }
 }

@@ -159,12 +159,12 @@ export const authService = {
         throw new Error('Unauthorized: Admin access required')
       }
 
-      const { name, email, role, staffDepartment, customPassword } = staffData
+      const { name, email, role, staffDepartment, employeeId, securityRole, shiftTiming, assignedGate, employmentStatus, joiningDate, customPassword } = staffData
 
       // Use custom password or generate a temporary one
       const password = customPassword || generateTempPassword()
 
-      console.log('Creating staff user:', { email, role, staffDepartment })
+      console.log('Creating staff user:', { email, role, staffDepartment, employeeId, securityRole })
 
       // Create the staff/security user using regular signUp
       const { data, error } = await supabase.auth.signUp({
@@ -218,6 +218,44 @@ export const authService = {
         throw new Error(`Failed to create staff record: ${staffError.message}`)
       } else {
         console.log('✅ Staff record created:', staffRecord)
+      }
+
+      // If Security role, ensure a Security staff profile is created for job details
+      if (role === USER_ROLES.SECURITY) {
+        try {
+          const { securityStaffService } = await import('./securityStaffService')
+          await securityStaffService.saveProfile({
+             user_id: data.user.id,
+             name,
+             email,
+             employee_id: employeeId || '',
+             security_role: securityRole || '',
+             shift_timing: shiftTiming || '',
+             assigned_gate: assignedGate || '',
+             employment_status: employmentStatus || 'Active',
+             joining_date: joiningDate || ''
+          });
+        } catch (err) {
+          console.error('⚠️ Could not initialize security details', err);
+        }
+      }
+
+      // If Staff role and Housekeeping department, ensure MongoDB profile is created
+      if (role === USER_ROLES.STAFF && staffDepartment === 'Housekeeping') {
+        try {
+          const { housekeepingStaffService } = await import('./housekeepingStaffService')
+          await housekeepingStaffService.saveProfile({
+            user_id: data.user.id,
+            name,
+            email,
+            employee_id: employeeId || '',
+            assigned_area: 'A', // Default area
+            shift_timing: shiftTiming || 'Morning',
+            employment_status: employmentStatus || 'Active'
+          })
+        } catch (err) {
+          console.error('⚠️ Could not initialize housekeeping details', err);
+        }
       }
 
       const result = { success: true, user: data.user }
@@ -337,10 +375,16 @@ export const authService = {
       // Transform the data to match the expected format
       const transformedUsers = (staffUsers || []).map(user => ({
         id: user.user_id,
+        user_id: user.user_id,
         name: user.name,
         email: user.email,
         role: user.role,
+        staff_department: user.staff_department,
         staffDepartment: user.staff_department,
+        shift_timing: user.shift_timing,
+        shiftTiming: user.shift_timing,
+        employee_id: user.employee_id,
+        employeeId: user.employee_id,
         createdAt: user.created_at,
         createdBy: user.created_by
       }))
@@ -418,7 +462,7 @@ export const authService = {
         throw new Error('Unauthorized: Admin access required')
       }
 
-      const { name, email, role, staffDepartment } = updateData
+      const { name, email, role, staffDepartment, employeeId, securityRole, shiftTiming, assignedGate, employmentStatus, joiningDate } = updateData
 
       console.log('🔄 Updating staff user:', userId, updateData)
 
@@ -441,6 +485,48 @@ export const authService = {
       }
 
       console.log('✅ Staff record updated:', updatedStaff)
+
+      // Keep security schema job details updated if security
+      if (role === USER_ROLES.SECURITY) {
+        try {
+          const { securityStaffService } = await import('./securityStaffService')
+          await securityStaffService.saveProfile({
+             user_id: userId,
+             name,
+             email,
+             employee_id: employeeId || '',
+             security_role: securityRole || '',
+             shift_timing: shiftTiming || '',
+             assigned_gate: assignedGate || '',
+             employment_status: employmentStatus || 'Active',
+             joining_date: joiningDate || ''
+          });
+        } catch(err) {
+          console.error("⚠️ Failed to update security job details: " + err);
+        }
+      }
+
+      // Sync housekeeping schema if staff and department is housekeeping
+      if (role === USER_ROLES.STAFF && staffDepartment === 'Housekeeping') {
+        try {
+          const { housekeepingStaffService } = await import('./housekeepingStaffService')
+          // Fetch existing to preserve area if possible
+          const currentRes = await housekeepingStaffService.getProfile(userId)
+          const currentArea = currentRes.success ? currentRes.profile?.assigned_area : 'A'
+          
+          await housekeepingStaffService.saveProfile({
+            user_id: userId,
+            name,
+            email,
+            employee_id: employeeId || '',
+            assigned_area: currentArea || 'A',
+            shift_timing: shiftTiming || 'Morning',
+            employment_status: employmentStatus || 'Active'
+          })
+        } catch(err) {
+          console.error("⚠️ Failed to update housekeeping job details: " + err);
+        }
+      }
 
       // Try to update the user's metadata in Supabase Auth (may not work from client-side)
       try {

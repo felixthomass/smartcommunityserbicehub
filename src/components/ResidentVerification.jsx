@@ -132,6 +132,7 @@ const ResidentVerification = ({ user, onVerified }) => {
       }
 
       // Verify with backend (uses admin ResidentEntry records)
+      console.log('[DEBUG VERIFY FRONTEND] Payload:', { email: form.email, name: form.name, aadhar: extractedAadhar, building: form.building, flat: form.flatNumber })
       const verifyResult = await residentService.verifyResident({
         email: form.email,
         name: form.name,
@@ -263,14 +264,18 @@ const ResidentVerification = ({ user, onVerified }) => {
             <input
               type="text"
               value={extractedAadhar}
-              onChange={(e) => setExtractedAadhar(e.target.value)}
+              onChange={(e) => setExtractedAadhar(e.target.value.replace(/\D/g, '').slice(0, 12))}
               className={`w-full px-3 py-2 border rounded-lg dark:border-gray-600 dark:bg-gray-700 ${
-                errors.aadharNumber ? 'border-red-500' : 'border-gray-300'
+                errors.aadharNumber || (extractedAadhar && extractedAadhar.length !== 12) ? 'border-red-500' : 'border-gray-300'
               }`}
               placeholder={form.aadharImage ? 'Auto-filled after upload' : 'Upload Aadhaar image to extract'}
-              disabled={!form.aadharImage}
             />
             {errors.aadharNumber && <p className="text-red-500 text-xs mt-1">{errors.aadharNumber}</p>}
+            {extractedAadhar && extractedAadhar.length !== 12 && (
+              <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-center gap-1">
+                <span>⚠</span> Aadhar must be exactly 12 digits (currently {extractedAadhar.length})
+              </p>
+            )}
           </div>
 
           {/* Aadhar number is extracted automatically from the uploaded image */}

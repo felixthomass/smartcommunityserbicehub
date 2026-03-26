@@ -23,10 +23,14 @@ export const aadharService = {
       const image = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl)
       const { data: { text } } = await Tesseract.recognize(image, 'eng')
 
-      const digits = (text.match(/\b\d{4}\s\d{4}\s\d{4}\b/) || [])[0] || ''
+      // Improved regex: look for 12 digits total, allowing for variable spacing or no spacing
+      const cleanedText = text.replace(/\s/g, '')
+      const match12 = cleanedText.match(/\d{12}/)
+      const aadharNumber = match12 ? match12[0] : ''
+      
       const nameMatch = text.split('\n').map(s=>s.trim()).find(s => /^[A-Z][A-Za-z\s]{2,}$/.test(s)) || ''
       const dobMatch = (text.match(/\b(\d{2}[\/.-]\d{2}[\/.-]\d{4})\b/i) || [])[1] || ''
-      return { success: true, data: { aadharNumber: digits.replace(/\s/g,'') || '', name: nameMatch || '', dob: dobMatch || '' } }
+      return { success: true, data: { aadharNumber, name: nameMatch, dob: dobMatch } }
     } catch (e) {
       return { success: false, error: e.message }
     }

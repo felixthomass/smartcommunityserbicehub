@@ -7,10 +7,10 @@ const config = {
     FRONTEND_URL: 'http://localhost:5173'
   },
   production: {
-    API_BASE_URL: 'https://smartcommunityserbicehub.onrender.com',
-    MONGO_API_URL: 'https://smartcommunityserbicehub.onrender.com',
-    EMAIL_SERVER_URL: 'https://smartcommunityserbicehub.onrender.com',
-    FRONTEND_URL: 'https://smartcommunityserbicehub.vercel.app'
+    API_BASE_URL: 'http://localhost:3002',
+    MONGO_API_URL: 'http://localhost:3002',
+    EMAIL_SERVER_URL: 'http://localhost:3002',
+    FRONTEND_URL: 'http://localhost:5173'
   }
 }
 

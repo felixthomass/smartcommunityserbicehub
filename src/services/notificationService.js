@@ -1,7 +1,7 @@
 // Notification Management Service
 class NotificationService {
   constructor() {
-    this.baseUrl = 'http://localhost:3002/api'
+    this.baseUrl = (import.meta.env?.VITE_API_BASE_URL || '') + '/api'
   }
 
   // Create a new notification

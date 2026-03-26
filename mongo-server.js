@@ -85,7 +85,7 @@ const upload = multer({
 })
 
 // MongoDB connection
-const MONGODB_URI = 'mongodb+srv://felixthomas8800:Felixthomas@communityhub.yjzla25.mongodb.net/?retryWrites=true&w=majority&appName=communityhub'
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/community-service'
 
 mongoose.connect(MONGODB_URI)
   .then(() => {
@@ -110,18 +110,21 @@ const visitorLogSchema = new mongoose.Schema({
   hostAuthUserId: { type: String, default: '' },
   entryTime: { type: Date, default: Date.now },
   exitTime: { type: Date },
+  expectedExitTime: { type: Date },
   status: { type: String, default: 'checked_in', enum: ['checked_in', 'checked_out'] },
   documentPhoto: { type: String }, // Supabase Storage URL for uploaded document
   documentPath: { type: String }, // Supabase Storage path for cleanup
   securityOfficer: { type: String, required: true },
   notes: { type: String },
   vehicleNumber: { type: String },
+  passGenerated: { type: Boolean, default: false },
+  passCode: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })
 
 // Update the updatedAt field before saving
-visitorLogSchema.pre('save', function(next) {
+visitorLogSchema.pre('save', function (next) {
   this.updatedAt = Date.now()
   next()
 })
@@ -142,7 +145,7 @@ const residentSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 })
 
-residentSchema.pre('save', function(next) {
+residentSchema.pre('save', function (next) {
   this.updatedAt = Date.now()
   next()
 })
@@ -202,7 +205,7 @@ const serviceRequestSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })
-serviceRequestSchema.pre('save', function(next){ this.updatedAt = Date.now(); next() })
+serviceRequestSchema.pre('save', function (next) { this.updatedAt = Date.now(); next() })
 const ServiceRequest = mongoose.model('ServiceRequest', serviceRequestSchema)
 
 // Create service request
@@ -286,6 +289,128 @@ app.post('/api/visitors', async (req, res) => {
   }
 })
 
+
+// ===== Visitor Analytics route =====
+app.get('/api/security/visitor-analytics', async (req, res) => {
+  try {
+    const now = new Date()
+    const startOfDay = new Date(now)
+    startOfDay.setHours(0, 0, 0, 0)
+
+    // Normalise entryTime field (may be string or Date)
+    const normalise = [
+      { $addFields: { entryAt: { $ifNull: ['$entryTime', '$createdAt'] } } },
+      { $addFields: { entryAt: { $cond: [{ $eq: [{ $type: '$entryAt' }, 'string'] }, { $toDate: '$entryAt' }, '$entryAt'] } } }
+    ]
+
+    // --- Summary stats ---
+    const summaryAgg = await VisitorLog.aggregate([
+      ...normalise,
+      { $match: { entryAt: { $gte: startOfDay } } },
+      {
+        $group: {
+          _id: null,
+          totalToday:     { $sum: 1 },
+          currentlyInside: { $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] } },
+          checkedOut:      { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } },
+          lateVisitors:    { 
+            $sum: { 
+              $cond: [
+                { 
+                  $and: [
+                    { $eq: ['$status', 'checked_in'] },
+                    { $gt: [{ $ifNull: ['$expectedExitTime', new Date(8640000000000000)] }, 0] },
+                    { $lt: ['$expectedExitTime', now] }
+                  ] 
+                }, 
+                1, 0 
+              ] 
+            } 
+          }
+        }
+      }
+    ])
+    const summary = summaryAgg[0] || { totalToday: 0, currentlyInside: 0, checkedOut: 0, lateVisitors: 0 }
+
+    // --- Hourly activity (0-23) ---
+    const hourlyAgg = await VisitorLog.aggregate([
+      ...normalise,
+      { $match: { entryAt: { $gte: startOfDay } } },
+      { $group: { _id: { $hour: '$entryAt' }, count: { $sum: 1 } } },
+      { $sort: { '_id': 1 } }
+    ])
+    const hourlyMap = {}
+    hourlyAgg.forEach(h => { hourlyMap[h._id] = h.count })
+    const formatHour = (h) => {
+      if (h === 0) return '12 AM'
+      if (h < 12) return `${h} AM`
+      if (h === 12) return '12 PM'
+      return `${h - 12} PM`
+    }
+    const hourlyActivity = Array.from({ length: 24 }, (_, i) => ({
+      hour: i,
+      label: formatHour(i),
+      count: hourlyMap[i] || 0
+    }))
+
+    // Peak hour
+    let peakHour = 0
+    let peakCount = 0
+    hourlyActivity.forEach(h => { if (h.count > peakCount) { peakCount = h.count; peakHour = h.hour } })
+    const peakHourLabel = peakCount > 0
+      ? `${formatHour(peakHour)} – ${formatHour((peakHour + 1) % 24)}`
+      : 'No visitors yet'
+
+    // --- Most visited flats (top 5) ---
+    const flatAgg = await VisitorLog.aggregate([
+      ...normalise,
+      { $match: { entryAt: { $gte: startOfDay } } },
+      { $group: { _id: '$hostFlat', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 }
+    ])
+    const mostVisitedFlats = flatAgg.map(f => ({ flat: f._id || 'Unknown', count: f.count }))
+
+    // --- Visitor type distribution (by purpose field) ---
+    const typeAgg = await VisitorLog.aggregate([
+      ...normalise,
+      { $match: { entryAt: { $gte: startOfDay } } },
+      { $group: {
+          _id: {
+            $toLower: {
+              $cond: [
+                { $or: [{ $eq: ['$purpose', null] }, { $eq: ['$purpose', ''] }] },
+                'other',
+                '$purpose'
+              ]
+            }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { count: -1 } }
+    ])
+    const visitorTypeDistribution = typeAgg.map(t => ({ type: t._id || 'other', count: t.count }))
+
+    res.json({
+      success: true,
+      data: {
+        totalToday:              summary.totalToday,
+        currentlyInside:         summary.currentlyInside,
+        checkedOut:              summary.checkedOut,
+        peakHour,
+        peakHourLabel,
+        hourlyActivity,
+        mostVisitedFlats,
+        visitorTypeDistribution
+      }
+    })
+  } catch (error) {
+    console.error('❌ Error fetching visitor analytics:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 // Visitor stats route must be declared BEFORE :id to avoid route capture
 app.get('/api/visitors/stats', async (req, res) => {
   try {
@@ -306,9 +431,28 @@ app.get('/api/visitors/stats', async (req, res) => {
       { $addFields: { entryAt: { $ifNull: ['$entryTime', '$createdAt'] } } },
       { $addFields: { entryAt: { $cond: [{ $eq: [{ $type: '$entryAt' }, 'string'] }, { $toDate: '$entryAt' }, '$entryAt'] } } },
       { $match: { entryAt: { $gte: startDate } } },
-      { $group: { _id: null, totalVisitors: { $sum: 1 }, checkedIn: { $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] } }, checkedOut: { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } } } }
+      { $group: { 
+        _id: null, 
+        totalVisitors: { $sum: 1 }, 
+        checkedIn: { $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] } }, 
+        checkedOut: { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } },
+        lateVisitors: { 
+          $sum: { 
+            $cond: [
+              { 
+                $and: [
+                  { $eq: ['$status', 'checked_in'] },
+                  { $gt: [{ $ifNull: ['$expectedExitTime', new Date(8640000000000000)] }, 0] },
+                  { $lt: ['$expectedExitTime', new Date()] }
+                ] 
+              }, 
+              1, 0 
+            ] 
+          } 
+        }
+      } }
     ])
-    const result = stats[0] || { totalVisitors: 0, checkedIn: 0, checkedOut: 0 }
+    const result = stats[0] || { totalVisitors: 0, checkedIn: 0, checkedOut: 0, lateVisitors: 0 }
     res.json({ success: true, data: result })
   } catch (error) {
     console.error('❌ Error fetching visitor stats:', error)
@@ -419,16 +563,16 @@ app.get('/api/monthly-fee/status/:residentId', async (req, res) => {
 const billSchema = new mongoose.Schema({
   title: { type: String, required: true },
   description: { type: String, default: '' },
-  category: { 
-    type: String, 
-    required: true, 
+  category: {
+    type: String,
+    required: true,
     enum: ['electricity', 'water', 'maintenance', 'gas', 'internet', 'security', 'other']
   },
   totalAmount: { type: Number, required: true },
   dueDate: { type: Date, required: true },
-  splitType: { 
-    type: String, 
-    required: true, 
+  splitType: {
+    type: String,
+    required: true,
     enum: ['equal', 'custom', 'size_based'],
     default: 'equal'
   },
@@ -439,8 +583,8 @@ const billSchema = new mongoose.Schema({
     building: { type: String, default: '' },
     flatNumber: { type: String, default: '' },
     amount: { type: Number, required: true },
-    status: { 
-      type: String, 
+    status: {
+      type: String,
       enum: ['pending', 'paid', 'partially_paid'],
       default: 'pending'
     },
@@ -454,7 +598,7 @@ const billSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 })
 
-billSchema.pre('save', function(next) {
+billSchema.pre('save', function (next) {
   this.updatedAt = Date.now()
   next()
 })
@@ -528,31 +672,120 @@ const deliverySchema = new mongoose.Schema({
   trackingId: { type: String, default: '' },
   packageDescription: { type: String, default: '' },
   deliveryNotes: { type: String, default: '' },
-  status: { type: String, enum: ['pending', 'delivered', 'accepted', 'failed'], default: 'delivered' },
-  deliveryTime: { type: Date, default: Date.now },
+  status: { 
+    type: String, 
+    enum: ['Arrived', 'Waiting Pickup', 'Delivered', 'failed'], 
+    default: 'Arrived' 
+  },
+  arrival_time: { type: Date, default: Date.now },
+  delivered_time: { type: Date },
+  time_taken: { type: Number }, // in minutes
+  notification_sent: { type: Boolean, default: false },
   securityOfficer: { type: String, default: '' },
   proofUrl: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })
-deliverySchema.pre('save', function(next) { this.updatedAt = Date.now(); next() })
+deliverySchema.pre('save', function (next) { this.updatedAt = Date.now(); next() })
 const Delivery = mongoose.model('Delivery', deliverySchema)
+
+// ===== SMART GATE MANAGEMENT SYSTEM MODELS =====
+
+// Worker Schema
+const workerSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  phone: { type: String, required: true, index: true },
+  type: { type: String, enum: ['maid', 'servant', 'driver', 'other'], default: 'maid' },
+  assignedFlats: [String],
+  accessTime: {
+    from: { type: String, default: '08:00' },
+    to: { type: String, default: '20:00' }
+  },
+  faceImage: { type: String },
+  isActive: { type: Boolean, default: true }
+}, { timestamps: true })
+
+const Worker = mongoose.model('Worker', workerSchema)
+
+// Staff Schema
+const staffSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  role: { type: String, required: true },
+  shift: { type: String, enum: ['Morning', 'Afternoon', 'Night'], default: 'Morning' },
+  faceImage: { type: String },
+  faceDescriptor: { type: [Number], default: [] },
+  isActive: { type: Boolean, default: true }
+}, { timestamps: true })
+
+const Staff = mongoose.model('Staff', staffSchema)
+
+// Attendance Schema
+const attendanceSchema = new mongoose.Schema({
+  staffId: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff', required: true },
+  date: { type: String, required: true }, // YYYY-MM-DD
+  checkIn: { type: Date },
+  checkOut: { type: Date },
+  status: { type: String, enum: ['present', 'late', 'absent'], default: 'present' },
+  photo: { type: String }
+}, { timestamps: true })
+
+const Attendance = mongoose.model('Attendance', attendanceSchema)
+
+// EntryLog Schema
+const entryLogSchema = new mongoose.Schema({
+  type: { type: String, enum: ['worker', 'staff', 'visitor', 'delivery'], required: true },
+  personId: { type: mongoose.Schema.Types.ObjectId },
+  name: { type: String, required: true },
+  time: { type: Date, default: Date.now },
+  photo: { type: String },
+  status: { type: String, enum: ['approved', 'rejected'], default: 'approved' },
+  notes: { type: String }
+}, { timestamps: true })
+
+const EntryLog = mongoose.model('EntryLog', entryLogSchema)
+
+// Emergency Alert Schema
+const emergencyAlertSchema = new mongoose.Schema({
+  emergencyType: { type: String, required: true },
+  location: { type: String },
+  description: { type: String },
+  reportedBy: { type: String },
+  severity: { type: String, enum: ['low', 'medium', 'high', 'critical'], default: 'high' },
+  status: { type: String, enum: ['active', 'resolved'], default: 'active' }
+}, { timestamps: true })
+
+const EmergencyAlert = mongoose.model('EmergencyAlert', emergencyAlertSchema)
+
+// Emergency Request Schema (Guard Leave)
+const emergencyRequestSchema = new mongoose.Schema({
+  securityId: { type: String, required: true },
+  name: { type: String },
+  reason: { type: String },
+  message: { type: String },
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' }
+}, { timestamps: true })
+
+const EmergencyRequest = mongoose.model('EmergencyRequest', emergencyRequestSchema)
+
 
 // Create a delivery log
 app.post('/api/deliveries', async (req, res) => {
   try {
     const payload = req.body
-    const delivery = new Delivery(payload)
+    const delivery = new Delivery({
+      ...payload,
+      status: 'Arrived',
+      arrival_time: new Date()
+    })
     const saved = await delivery.save()
 
     // Notify the resident (role-based) and targeted by building-flat identifier if available
     try {
-      // Ensure we notify ONLY the selected resident
       const resident = await Resident.findOne({ building: payload.building, flatNumber: payload.flatNumber })
       const targetUsers = resident?.authUserId ? [resident.authUserId] : []
       const notification = new Notification({
-        title: 'Package Delivered',
-        message: `Your ${payload.vendor} package has arrived at ${payload.building}-${payload.flatNumber}.`,
+        title: '📦 Delivery Arrived',
+        message: `Your ${payload.vendor} package for Flat ${payload.building}-${payload.flatNumber} has arrived at the gate.`,
         type: 'delivery',
         priority: 'medium',
         targetUsers,
@@ -563,12 +796,57 @@ app.post('/api/deliveries', async (req, res) => {
       })
       await notification.save()
     } catch (notifErr) {
-      console.warn('Delivery notification failed:', notifErr.message)
+      console.warn('Initial delivery notification failed:', notifErr.message)
     }
 
     res.status(201).json({ success: true, data: saved })
   } catch (error) {
     console.error('❌ Error creating delivery:', error)
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+// Create bulk delivery logs
+app.post('/api/deliveries/bulk', async (req, res) => {
+  try {
+    const { deliveries } = req.body
+    if (!deliveries || !Array.isArray(deliveries)) {
+      return res.status(400).json({ success: false, error: 'Deliveries array is required' })
+    }
+
+    const processedDeliveries = deliveries.map(d => ({
+      ...d,
+      status: 'Arrived',
+      arrival_time: new Date()
+    }))
+
+    const saved = await Delivery.insertMany(processedDeliveries)
+
+    // Send notifications for each delivery (background)
+    saved.forEach(async (delivery) => {
+      try {
+        const resident = await Resident.findOne({ building: delivery.building, flatNumber: delivery.flatNumber })
+        const targetUsers = resident?.authUserId ? [resident.authUserId] : []
+        const notification = new Notification({
+          title: '📦 Delivery Arrived',
+          message: `Your ${delivery.vendor} package for Flat ${delivery.building}-${delivery.flatNumber} has arrived at the gate.`,
+          type: 'delivery',
+          priority: 'medium',
+          targetUsers,
+          targetRoles: [],
+          senderId: 'security',
+          senderName: delivery.securityOfficer || 'Security',
+          metadata: { deliveryId: delivery._id, actionUrl: '/deliveries' }
+        })
+        await notification.save()
+      } catch (notifErr) {
+        console.warn(`Bulk delivery notification failed for ${delivery._id}:`, notifErr.message)
+      }
+    })
+
+    res.status(201).json({ success: true, count: saved.length, data: saved })
+  } catch (error) {
+    console.error('❌ Error creating bulk deliveries:', error)
     res.status(400).json({ success: false, error: error.message })
   }
 })
@@ -583,8 +861,8 @@ app.get('/api/deliveries', async (req, res) => {
     if (status && status !== 'all') query.status = status
     if (agentName) query.agentName = { $regex: agentName, $options: 'i' }
     if (date) {
-      const start = new Date(date); start.setHours(0,0,0,0)
-      const end = new Date(date); end.setDate(end.getDate() + 1); end.setHours(0,0,0,0)
+      const start = new Date(date); start.setHours(0, 0, 0, 0)
+      const end = new Date(date); end.setDate(end.getDate() + 1); end.setHours(0, 0, 0, 0)
       query.deliveryTime = { $gte: start, $lt: end }
     }
     const docs = await Delivery.find(query).sort({ deliveryTime: -1 }).limit(parseInt(limit)).skip(parseInt(offset))
@@ -595,12 +873,72 @@ app.get('/api/deliveries', async (req, res) => {
   }
 })
 
-// Update delivery status (e.g., accepted by resident)
+// Notify resident about delivery
+app.put('/api/deliveries/:id/notify', async (req, res) => {
+  try {
+    const { id } = req.params
+    const doc = await Delivery.findByIdAndUpdate(id, { 
+      status: 'Waiting Pickup', 
+      notification_sent: true,
+      updatedAt: new Date() 
+    }, { new: true })
+    
+    if (!doc) return res.status(404).json({ success: false, error: 'Delivery not found' })
+    
+    // Add a specialized notification for "Waiting Pickup" if needed
+    // ... existing notification logic is already in POST, but we can add another one here
+    
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error notifying resident:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Complete delivery (Delivered state)
+app.put('/api/deliveries/:id/complete', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { status = 'Delivered' } = req.body
+    
+    const delivery = await Delivery.findById(id)
+    if (!delivery) return res.status(404).json({ success: false, error: 'Delivery not found' })
+    
+    const delivered_time = new Date()
+    const arrival_time = delivery.arrival_time || delivery.createdAt
+    const time_taken = Math.round((delivered_time - arrival_time) / (1000 * 60)) // diff in minutes
+    
+    const doc = await Delivery.findByIdAndUpdate(id, { 
+      status, 
+      delivered_time,
+      time_taken,
+      updatedAt: new Date() 
+    }, { new: true })
+    
+    res.json({ success: true, data: doc })
+  } catch (error) {
+    console.error('❌ Error completing delivery:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Update delivery status (General purpose)
 app.put('/api/deliveries/:id/status', async (req, res) => {
   try {
     const { id } = req.params
     const { status, acceptedBy } = req.body
     const update = { status, updatedAt: new Date() }
+    
+    if (status === 'Delivered' || status === 'delivered') {
+      const delivery = await Delivery.findById(id)
+      if (delivery) {
+        update.delivered_time = new Date()
+        const arrival = delivery.arrival_time || delivery.createdAt
+        update.time_taken = Math.round((update.delivered_time - arrival) / (1000 * 60))
+        update.status = 'Delivered'
+      }
+    }
+    
     if (status === 'accepted') update.acceptedBy = acceptedBy
     const doc = await Delivery.findByIdAndUpdate(id, update, { new: true })
     if (!doc) return res.status(404).json({ success: false, error: 'Delivery not found' })
@@ -627,6 +965,19 @@ app.post('/api/deliveries/:id/proof', upload.single('photo'), async (req, res) =
   }
 })
 
+// Delete a delivery log
+app.delete('/api/deliveries/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const doc = await Delivery.findByIdAndDelete(id)
+    if (!doc) return res.status(404).json({ success: false, error: 'Delivery not found' })
+    res.json({ success: true, message: 'Delivery log deleted successfully' })
+  } catch (error) {
+    console.error('❌ Error deleting delivery:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 // Get delivery vendors (unique vendors from deliveries)
 app.get('/api/deliveries/vendors', async (req, res) => {
   try {
@@ -644,7 +995,7 @@ app.get('/api/deliveries/stats', async (req, res) => {
   try {
     const { period = 'day' } = req.query
     let startDate = new Date()
-    
+
     switch (period) {
       case 'day':
         startDate.setHours(0, 0, 0, 0)
@@ -656,7 +1007,7 @@ app.get('/api/deliveries/stats', async (req, res) => {
         startDate.setMonth(startDate.getMonth() - 1)
         break
     }
-    
+
     const stats = await Delivery.aggregate([
       { $match: { deliveryTime: { $gte: startDate } } },
       {
@@ -669,7 +1020,7 @@ app.get('/api/deliveries/stats', async (req, res) => {
         }
       }
     ])
-    
+
     const result = stats[0] || { totalToday: 0, delivered: 0, accepted: 0, failed: 0 }
     res.json({ success: true, data: result })
   } catch (error) {
@@ -694,14 +1045,14 @@ app.get('/api/deliveries/agents/:vendorId', async (req, res) => {
       { $sort: { count: -1 } },
       { $limit: 10 }
     ])
-    
+
     const agentData = agents.map(agent => ({
       name: agent._id.name,
       phone: agent._id.phone,
       deliveryCount: agent.count,
       lastDelivery: agent.lastDelivery
     }))
-    
+
     res.json({ success: true, data: agentData })
   } catch (error) {
     console.error('❌ Error fetching frequent agents:', error)
@@ -716,11 +1067,11 @@ app.get('/api/deliveries/suggestions', async (req, res) => {
     if (!agentName || agentName.length < 2) {
       return res.json({ success: true, data: null })
     }
-    
+
     const suggestions = await Delivery.find({
       agentName: { $regex: agentName, $options: 'i' }
     }).sort({ deliveryTime: -1 }).limit(5)
-    
+
     res.json({ success: true, data: suggestions })
   } catch (error) {
     console.error('❌ Error fetching delivery suggestions:', error)
@@ -739,13 +1090,414 @@ app.get('/api/deliveries/agents/blacklisted', async (req, res) => {
   }
 })
 
+// ===== GATE MANAGEMENT SYSTEM APIs =====
+
+// Helper to determine late status
+const getAttendanceStatus = (checkInTime, shift) => {
+  const time = new Date(checkInTime)
+  const hours = time.getHours()
+  const minutes = time.getMinutes()
+  const totalMinutes = hours * 60 + minutes
+
+  // Shift start times (in minutes from midnight)
+  const morningStart = 8 * 60 // 08:00
+  const afternoonStart = 14 * 60 // 14:00
+  const nightStart = 22 * 60 // 22:00
+
+  let limit = morningStart
+  if (shift === 'Afternoon') limit = afternoonStart
+  if (shift === 'Night') limit = nightStart
+
+  return totalMinutes > limit + 15 ? 'late' : 'present'
+}
+
+const euclideanDistance = (a, b) => {
+  if (!a || !b || a.length !== b.length) return 1.0
+  return Math.sqrt(a.reduce((acc, val, i) => acc + Math.pow(val - b[i], 2), 0))
+}
+
+// 1. Worker Entry
+app.post('/api/entry/worker', upload.single('photo'), async (req, res) => {
+  try {
+    const { phone, name } = req.body
+    const photo = req.file ? `/uploads/${req.file.filename}` : null
+    const photoUrl = photo ? `http://localhost:3002${photo}` : null
+
+    // Find worker by phone or name
+    let worker = await Worker.findOne({ $or: [{ phone }, { name: { $regex: name || '', $options: 'i' } }] })
+    
+    if (!worker) {
+      // Create a temporary log for unidentified worker
+      const log = new EntryLog({
+        type: 'worker',
+        name: name || 'Unknown Worker',
+        photo: photoUrl,
+        status: 'rejected',
+        notes: 'Worker not found in database'
+      })
+      await log.save()
+      return res.status(404).json({ success: false, error: 'Worker not found', log })
+    }
+
+    if (!worker.isActive) {
+      const log = new EntryLog({
+        type: 'worker',
+        personId: worker._id,
+        name: worker.name,
+        photo: photoUrl,
+        status: 'rejected',
+        notes: 'Worker status is inactive'
+      })
+      await log.save()
+      return res.status(403).json({ success: false, error: 'Worker is inactive', log })
+    }
+
+    const log = new EntryLog({
+      type: 'worker',
+      personId: worker._id,
+      name: worker.name,
+      photo: photoUrl,
+      status: 'approved'
+    })
+    await log.save()
+
+    res.json({ success: true, data: worker, log })
+  } catch (error) {
+    console.error('❌ Error in worker entry:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 2. Staff Entry (Face Attendance)
+app.post('/api/entry/staff', upload.single('photo'), async (req, res) => {
+  try {
+    const { staffId, name } = req.body
+    const photo = req.file ? `/uploads/${req.file.filename}` : null
+    const photoUrl = photo ? `http://localhost:3002${photo}` : null
+
+    let query = {}
+    if (staffId && mongoose.Types.ObjectId.isValid(staffId)) query._id = staffId
+    else if (name) query.name = { $regex: name, $options: 'i' }
+    else return res.status(400).json({ success: false, error: 'Staff identification required' })
+
+    const staff = await Staff.findOne(query)
+    
+    if (!staff) {
+      return res.status(404).json({ success: false, error: 'Staff member not found' })
+    }
+
+    const today = new Date().toISOString().split('T')[0]
+    let attendance = await Attendance.findOne({ staffId: staff._id, date: today })
+
+    if (!attendance) {
+      // Check-In
+      const status = getAttendanceStatus(new Date(), staff.shift)
+      attendance = new Attendance({
+        staffId: staff._id,
+        date: today,
+        checkIn: new Date(),
+        status,
+        photo: photoUrl
+      })
+      await attendance.save()
+      
+      const log = new EntryLog({
+        type: 'staff',
+        personId: staff._id,
+        name: staff.name,
+        photo: photoUrl,
+        status: 'approved',
+        notes: `Check-in marked as ${status}`
+      })
+      await log.save()
+      
+      return res.json({ success: true, type: 'check-in', data: attendance, status, staff })
+    } else if (!attendance.checkOut) {
+      // Check-Out
+      attendance.checkOut = new Date()
+      await attendance.save()
+      
+      const log = new EntryLog({
+        type: 'staff',
+        personId: staff._id,
+        name: staff.name,
+        photo: photoUrl,
+        status: 'approved',
+        notes: 'Check-out marked'
+      })
+      await log.save()
+      
+      return res.json({ success: true, type: 'check-out', data: attendance, staff })
+    } else {
+      return res.status(400).json({ success: false, error: 'Already checked out for today' })
+    }
+  } catch (error) {
+    console.error('❌ Error in staff entry:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 3. Get Attendance Logs
+app.get('/api/attendance', async (req, res) => {
+  try {
+    const { date } = req.query
+    const query = date ? { date } : {}
+    const logs = await Attendance.find(query).populate('staffId').sort({ createdAt: -1 })
+    res.json({ success: true, data: logs })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 4. Get Entry Logs
+app.get('/api/entry/logs', async (req, res) => {
+  try {
+    const { type, status, date } = req.query
+    const query = {}
+    if (type) query.type = type
+    if (status) query.status = status
+    if (date) {
+      const start = new Date(date); start.setHours(0,0,0,0)
+      const end = new Date(date); end.setHours(23,59,59,999)
+      query.time = { $gte: start, $lte: end }
+    }
+    const logs = await EntryLog.find(query).sort({ time: -1 })
+    res.json({ success: true, data: logs })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 5. Activity Feed
+app.get('/api/passes/activity', async (req, res) => {
+  try {
+    const [visitors, alerts, entryLogs] = await Promise.all([
+      VisitorLog.find().sort({ createdAt: -1 }).limit(5),
+      EmergencyAlert.find({ status: 'active' }).sort({ createdAt: -1 }).limit(5),
+      EntryLog.find().sort({ createdAt: -1 }).limit(10)
+    ])
+
+    const activities = [
+      ...visitors.map(v => ({
+        type: 'visitor',
+        subject: v.visitorName,
+        description: `Entered for flat ${v.hostFlat}`,
+        timestamp: v.createdAt,
+        meta: v.status
+      })),
+      ...alerts.map(a => ({
+        type: 'alert',
+        subject: a.emergencyType.toUpperCase(),
+        description: a.description || `Emergency reported at ${a.location}`,
+        timestamp: a.createdAt,
+        meta: a.severity
+      })),
+      ...entryLogs.map(l => ({
+        type: l.type === 'staff' ? 'staff' : 'visitor',
+        subject: l.name,
+        description: l.notes || `${l.type} entry ${l.status}`,
+        timestamp: l.time,
+        meta: l.status
+      }))
+    ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 15)
+
+    res.json({ success: true, activities })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 6. Emergency Alerts
+app.post('/api/emergency-alerts', async (req, res) => {
+  try {
+    const alert = new EmergencyAlert(req.body)
+    await alert.save()
+    res.status(201).json({ success: true, data: alert })
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+app.get('/api/emergency-alerts/active', async (req, res) => {
+  try {
+    const alerts = await EmergencyAlert.find({ status: 'active' }).sort({ createdAt: -1 })
+    res.json({ success: true, data: alerts })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.post('/api/emergency-requests', async (req, res) => {
+  try {
+    const doc = new EmergencyRequest(req.body)
+    await doc.save()
+    res.status(201).json({ success: true, data: doc })
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+app.get('/api/emergency-requests/guard/:securityId', async (req, res) => {
+  try {
+    const docs = await EmergencyRequest.find({ securityId: req.params.securityId }).sort({ createdAt: -1 })
+    res.json({ success: true, data: docs })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// === FACE RECOGNITION APIs ===
+app.post('/api/face/register', async (req, res) => {
+  try {
+    const { name, descriptor, role, shift } = req.body
+    if (!descriptor || descriptor.length !== 128) {
+      return res.status(400).json({ success: false, error: 'Invalid face descriptor' })
+    }
+
+    let staff = await Staff.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } })
+    if (staff) {
+      staff.faceDescriptor = descriptor
+      if (role) staff.role = role
+      if (shift) staff.shift = shift
+      await staff.save()
+    } else {
+      staff = new Staff({
+        name,
+        role: role || 'Staff',
+        shift: shift || 'Morning',
+        faceDescriptor: descriptor
+      })
+      await staff.save()
+    }
+    res.json({ success: true, data: staff })
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+app.post('/api/face/match', async (req, res) => {
+  try {
+    const { descriptor } = req.body
+    if (!descriptor || descriptor.length !== 128) {
+      return res.status(400).json({ success: false, error: 'Invalid face descriptor' })
+    }
+
+    const allStaff = await Staff.find({ faceDescriptor: { $exists: true, $ne: [] } })
+    let bestMatch = null
+    let minDistance = 1.0
+
+    for (const staff of allStaff) {
+      const distance = euclideanDistance(descriptor, staff.faceDescriptor)
+      if (distance < minDistance) {
+        minDistance = distance
+        bestMatch = staff
+      }
+    }
+
+    const MATCH_THRESHOLD = 0.5
+    if (bestMatch && minDistance < MATCH_THRESHOLD) {
+      // Auto-mark attendance
+      const today = new Date().toISOString().split('T')[0]
+      let attendance = await Attendance.findOne({ staffId: bestMatch._id, date: today })
+      
+      let type = 'existing'
+      let status = 'present'
+
+      if (!attendance) {
+        type = 'check-in'
+        status = getAttendanceStatus(new Date(), bestMatch.shift)
+        attendance = new Attendance({
+          staffId: bestMatch._id,
+          date: today,
+          checkIn: new Date(),
+          status
+        })
+        await attendance.save()
+
+        await new EntryLog({
+          type: 'staff',
+          personId: bestMatch._id,
+          name: bestMatch.name,
+          status: 'approved',
+          notes: `Face Recognized: ${bestMatch.name} (Dist: ${minDistance.toFixed(3)}). Check-in marked as ${status}`
+        }).save()
+      } else if (!attendance.checkOut) {
+        type = 'check-out'
+        attendance.checkOut = new Date()
+        await attendance.save()
+
+        await new EntryLog({
+          type: 'staff',
+          personId: bestMatch._id,
+          name: bestMatch.name,
+          status: 'approved',
+          notes: `Face Recognized: ${bestMatch.name} (Dist: ${minDistance.toFixed(3)}). Check-out marked.`
+        }).save()
+      } else {
+        return res.json({ matched: true, name: bestMatch.name, alreadyDone: true, distance: minDistance })
+      }
+
+      return res.json({ 
+        matched: true, 
+        name: bestMatch.name, 
+        type, 
+        status: attendance.status, 
+        distance: minDistance 
+      })
+    }
+
+    res.json({ matched: false, distance: minDistance })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 7. Manage Staff & Workers Helper routes
+app.post('/api/gate/workers', async (req, res) => {
+  try {
+    const worker = new Worker(req.body)
+    await worker.save()
+    res.json({ success: true, data: worker })
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+app.get('/api/gate/workers', async (req, res) => {
+  try {
+    const workers = await Worker.find().sort({ name: 1 })
+    res.json({ success: true, data: workers })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.post('/api/gate/staff', async (req, res) => {
+  try {
+    const staff = new Staff(req.body)
+    await staff.save()
+    res.json({ success: true, data: staff })
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message })
+  }
+})
+
+app.get('/api/gate/staff', async (req, res) => {
+  try {
+    const staff = await Staff.find().sort({ name: 1 })
+    res.json({ success: true, data: staff })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 // Create a new bill
 app.post('/api/bills', async (req, res) => {
   try {
     const billData = req.body
     const bill = new Bill(billData)
     const savedBill = await bill.save()
-    
+
     // Send automated notification to all residents about new bill
     try {
       const notification = new Notification({
@@ -780,7 +1532,7 @@ app.post('/api/bills', async (req, res) => {
     } catch (notifError) {
       console.error('❌ Error sending bill notification:', notifError)
     }
-    
+
     res.status(201).json({ success: true, data: savedBill })
   } catch (error) {
     console.error('❌ Error creating bill:', error)
@@ -883,7 +1635,7 @@ app.get('/api/bills/resident/:residentId/summary', async (req, res) => {
       if (a.status === 'paid') totalPaid += a.amount
       else if (a.status === 'pending') { totalPending += a.amount; if (bill.dueDate < now) totalOverdue += a.amount }
     })
-    const recentBills = bills.sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5)
+    const recentBills = bills.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 5)
     const recentPayments = await Payment.find({ residentId }).sort({ paidAt: -1 }).limit(5)
     res.json({ success: true, data: { totalPending, totalOverdue, totalPaid, recentBills, recentPayments } })
   } catch (error) {
@@ -926,26 +1678,26 @@ app.get('/api/payments/resident/:residentId', async (req, res) => {
 app.get('/api/visitors', async (req, res) => {
   try {
     const { date, status, search, limit = 50, page = 1 } = req.query
-    
+
     let query = {}
-    
+
     // Date filter
     if (date) {
       const startDate = new Date(date)
       const endDate = new Date(date)
       endDate.setDate(endDate.getDate() + 1)
-      
+
       query.entryTime = {
         $gte: startDate,
         $lt: endDate
       }
     }
-    
+
     // Status filter
     if (status) {
       query.status = status
     }
-    
+
     // Search filter
     if (search) {
       query.$or = [
@@ -956,16 +1708,16 @@ app.get('/api/visitors', async (req, res) => {
         { vehicleNumber: { $regex: search, $options: 'i' } }
       ]
     }
-    
+
     const skip = (parseInt(page) - 1) * parseInt(limit)
-    
+
     const visitors = await VisitorLog.find(query)
       .sort({ entryTime: -1 })
       .limit(parseInt(limit))
       .skip(skip)
-    
+
     const total = await VisitorLog.countDocuments(query)
-    
+
     res.json({
       success: true,
       data: visitors,
@@ -993,14 +1745,14 @@ app.put('/api/visitors/:id', async (req, res) => {
       { ...req.body, updatedAt: Date.now() },
       { new: true }
     )
-    
+
     if (!updatedLog) {
       return res.status(404).json({
         success: false,
         error: 'Visitor log not found'
       })
     }
-    
+
     console.log('✅ Visitor log updated:', updatedLog._id)
     res.json({
       success: true,
@@ -1013,6 +1765,40 @@ app.put('/api/visitors/:id', async (req, res) => {
       success: false,
       error: error.message
     })
+  }
+})
+
+// Quick checkout for visitor
+app.post('/api/visitors/checkout', async (req, res) => {
+  try {
+    const { visitor_id } = req.body
+    if (!visitor_id) {
+      return res.status(400).json({ success: false, error: 'visitor_id is required' })
+    }
+
+    const updatedLog = await VisitorLog.findByIdAndUpdate(
+      visitor_id,
+      { 
+        status: 'checked_out', 
+        exitTime: new Date(),
+        updatedAt: Date.now() 
+      },
+      { new: true }
+    )
+
+    if (!updatedLog) {
+      return res.status(404).json({ success: false, error: 'Visitor log not found' })
+    }
+
+    console.log('✅ Visitor checked out:', updatedLog._id)
+    res.json({
+      success: true,
+      data: updatedLog,
+      message: 'Visitor checked out successfully'
+    })
+  } catch (error) {
+    console.error('❌ Error checking out visitor:', error)
+    res.status(500).json({ success: false, error: error.message })
   }
 })
 
@@ -1063,17 +1849,17 @@ app.post('/api/visitors/upload', upload.single('document'), async (req, res) => 
 app.delete('/api/visitors/:id', async (req, res) => {
   try {
     const deletedLog = await VisitorLog.findByIdAndDelete(req.params.id)
-    
+
     if (!deletedLog) {
       return res.status(404).json({
         success: false,
         error: 'Visitor log not found'
       })
     }
-    
+
     // Note: Document cleanup is handled by the client-side storageService
     // when calling mongoService.deleteVisitorLog()
-    
+
     console.log('✅ Visitor log deleted:', deletedLog._id)
     res.json({
       success: true,
@@ -1092,9 +1878,9 @@ app.delete('/api/visitors/:id', async (req, res) => {
 app.get('/api/visitors/stats', async (req, res) => {
   try {
     const { period = 'today' } = req.query
-    
+
     let startDate = new Date()
-    
+
     switch (period) {
       case 'today':
         startDate.setHours(0, 0, 0, 0)
@@ -1106,7 +1892,7 @@ app.get('/api/visitors/stats', async (req, res) => {
         startDate.setMonth(startDate.getMonth() - 1)
         break
     }
-    
+
     const stats = await VisitorLog.aggregate([
       // Normalize a single date field to use for filtering
       {
@@ -1136,13 +1922,27 @@ app.get('/api/visitors/stats', async (req, res) => {
           _id: null,
           totalVisitors: { $sum: 1 },
           checkedIn: { $sum: { $cond: [{ $eq: ['$status', 'checked_in'] }, 1, 0] } },
-          checkedOut: { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } }
+          checkedOut: { $sum: { $cond: [{ $eq: ['$status', 'checked_out'] }, 1, 0] } },
+          lateVisitors: { 
+            $sum: { 
+              $cond: [
+                { 
+                  $and: [
+                    { $eq: ['$status', 'checked_in'] },
+                    { $gt: [{ $ifNull: ['$expectedExitTime', new Date(8640000000000000)] }, 0] },
+                    { $lt: ['$expectedExitTime', new Date()] }
+                  ] 
+                }, 
+                1, 0 
+              ] 
+            } 
+          }
         }
       }
     ])
-    
+
     const result = stats[0] || { totalVisitors: 0, checkedIn: 0, checkedOut: 0 }
-    
+
     res.json({
       success: true,
       data: result
@@ -1307,7 +2107,7 @@ app.get('/api/residents', async (req, res) => {
     }))
 
     // Merge by authUserId if present, otherwise by email+building+flat
-    const keyOf = r => r.authUserId || `${(r.email||'').toLowerCase()}|${r.building}|${r.flatNumber}`
+    const keyOf = r => r.authUserId || `${(r.email || '').toLowerCase()}|${r.building}|${r.flatNumber}`
     const mergedMap = new Map()
     for (const r of projectedAdmin) {
       mergedMap.set(keyOf(r), r)
@@ -1518,7 +2318,10 @@ app.post('/api/residents/verify', async (req, res) => {
     if (!email || !name || !aadharNumber || !supabaseUserId || !building || !flatNumber) {
       return res.status(400).json({ success: false, error: 'Missing required fields' })
     }
+    console.log('[DEBUG VERIFY MONGO] req.body:', JSON.stringify(req.body))
     const resident = await ResidentEntry.findOne({ email, building, flatNumber })
+    console.log('[DEBUG VERIFY MONGO] Resident found:', resident ? 'YES' : 'NO')
+    if (resident) console.log('[DEBUG VERIFY MONGO] DB Record:', JSON.stringify({ name: resident.name, aadhar: resident.aadharNumber }))
     if (!resident) return res.status(404).json({ success: false, error: 'Resident not found' })
     const nameMatch = (resident.name || '').toLowerCase().trim() === name.toLowerCase().trim()
     const aadharMatch = (resident.aadharNumber || '').trim() === aadharNumber.trim()
@@ -1526,7 +2329,12 @@ app.post('/api/residents/verify', async (req, res) => {
       await ResidentEntry.updateOne({ _id: resident._id }, { verified: true, supabaseUserId })
       return res.json({ success: true, data: { verified: true, resident } })
     }
-    return res.json({ success: true, data: { verified: false, reason: 'Details do not match' } })
+    
+    let reason = 'Details do not match'
+    if (!nameMatch) reason += ' (Name mismatch)'
+    if (!aadharMatch) reason += ' (Aadhar number mismatch)'
+    
+    return res.json({ success: true, data: { verified: false, reason } })
   } catch (error) {
     console.error('❌ Error verifying resident:', error)
     res.status(500).json({ success: false, error: error.message })
@@ -1544,7 +2352,7 @@ app.post('/api/payments/razorpay/order', async (req, res) => {
     if (!supabaseUserId) return res.status(400).json({ success: false, error: 'supabaseUserId required' })
 
     // Razorpay constraint: receipt length <= 40
-    const baseReceipt = receipt || `verify_${(supabaseUserId||'user').slice(-8)}_${Date.now().toString(36)}`
+    const baseReceipt = receipt || `verify_${(supabaseUserId || 'user').slice(-8)}_${Date.now().toString(36)}`
     const safeReceipt = baseReceipt.slice(0, 40)
 
     const orderPayload = {
@@ -1698,7 +2506,7 @@ const complaintSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 })
 
-complaintSchema.pre('save', function(next) {
+complaintSchema.pre('save', function (next) {
   this.updatedAt = Date.now()
   next()
 })
@@ -1711,7 +2519,7 @@ app.post('/api/complaints', async (req, res) => {
     const payload = req.body
     const complaint = new Complaint(payload)
     const saved = await complaint.save()
-    
+
     // Send automated notification to admin about new complaint
     try {
       const notification = new Notification({
@@ -1749,7 +2557,7 @@ app.post('/api/complaints', async (req, res) => {
     } catch (notifError) {
       console.error('❌ Error sending complaint notification:', notifError)
     }
-    
+
     res.status(201).json({ success: true, complaint: saved })
   } catch (error) {
     console.error('❌ Error creating complaint:', error)
@@ -1800,12 +2608,13 @@ app.delete('/api/complaints/:id', async (req, res) => {
   }
 })
 
-// Visitor Pass Schema
-const visitorPassSchema = new mongoose.Schema({
+// Pass Schema for Visitor Access
+const passSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true, index: true },
   visitorName: { type: String, required: true },
   visitorPhone: { type: String, required: true },
   visitorEmail: { type: String },
+  visitorType: { type: String, default: 'Guest' },
   hostAuthUserId: { type: String, required: true },
   hostName: { type: String, default: '' },
   hostPhone: { type: String, default: '' },
@@ -1813,17 +2622,17 @@ const visitorPassSchema = new mongoose.Schema({
   flatNumber: { type: String, default: '' },
   directions: { type: String, default: '' },
   validUntil: { type: Date, required: true },
-  status: { type: String, default: 'active', enum: ['active', 'used', 'expired'] },
+  status: { type: String, default: 'active', enum: ['active', 'used', 'expired', 'rejected'] },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })
 
-visitorPassSchema.pre('save', function(next) {
+passSchema.pre('save', function (next) {
   this.updatedAt = Date.now()
   next()
 })
 
-const VisitorPass = mongoose.model('VisitorPass', visitorPassSchema)
+const Pass = mongoose.model('Pass', passSchema)
 
 // Chat schemas
 const chatRoomSchema = new mongoose.Schema({
@@ -1834,7 +2643,7 @@ const chatRoomSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 })
-chatRoomSchema.pre('save', function(next){ this.updatedAt = Date.now(); next() })
+chatRoomSchema.pre('save', function (next) { this.updatedAt = Date.now(); next() })
 const ChatRoom = mongoose.model('ChatRoom', chatRoomSchema)
 
 const chatMessageSchema = new mongoose.Schema({
@@ -1884,9 +2693,9 @@ app.post('/api/chat/upload', upload.single('file'), async (req, res) => {
 
     const fileType = allowedTypes[file.mimetype]
     if (!fileType) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'File type not supported. Allowed: images, videos, PDFs, documents' 
+      return res.status(400).json({
+        success: false,
+        error: 'File type not supported. Allowed: images, videos, PDFs, documents'
       })
     }
 
@@ -1919,13 +2728,13 @@ const announcementSchema = new mongoose.Schema({
   adminEmail: { type: String, default: '' },
   title: { type: String, required: true },
   content: { type: String, required: true },
-  type: { 
-    type: String, 
+  type: {
+    type: String,
     default: 'announcement',
     enum: ['announcement', 'event', 'festival', 'maintenance']
   },
-  priority: { 
-    type: String, 
+  priority: {
+    type: String,
     default: 'normal',
     enum: ['low', 'normal', 'high', 'urgent']
   },
@@ -1934,8 +2743,8 @@ const announcementSchema = new mongoose.Schema({
   organizer: { type: String, default: '' },
   image: { type: String, default: '' },
   isActive: { type: Boolean, default: true },
-  targetRoles: { 
-    type: [String], 
+  targetRoles: {
+    type: [String],
     default: ['resident', 'admin', 'staff', 'security'],
     enum: ['resident', 'admin', 'staff', 'security']
   },
@@ -1943,27 +2752,47 @@ const announcementSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 })
 
-announcementSchema.pre('save', function(next) {
+announcementSchema.pre('save', function (next) {
   this.updatedAt = Date.now()
   next()
 })
 
 const Announcement = mongoose.model('Announcement', announcementSchema)
 
-// Create visitor pass
+// Create a new pass
 app.post('/api/passes', async (req, res) => {
   try {
     const { visitorName, visitorPhone, visitorEmail, hostAuthUserId, hostName, hostPhone, building, flatNumber, validUntil } = req.body
-    if (!visitorName || !visitorPhone || !hostAuthUserId || !validUntil) {
-      return res.status(400).json({ success: false, error: 'Missing required fields' })
+    
+    // Check required fields
+    if (!visitorName || !visitorPhone || !hostAuthUserId) {
+      return res.status(400).json({ success: false, error: 'Missing required fields: visitorName, visitorPhone, hostAuthUserId' })
     }
-    // Generate simple directions text (can be enhanced later)
+
+    // Generate simple directions text
     const floor = (flatNumber || '').toString().charAt(0)
-    const directions = building && flatNumber
+    const directionsStr = building && flatNumber
       ? `Enter through Security Gate → Proceed to Building ${building} → Take elevator to Floor ${floor} → Flat ${flatNumber}`
       : ''
-    const code = Math.random().toString(36).slice(2, 10).toUpperCase() + Date.now().toString(36).slice(-4).toUpperCase()
-    const pass = new VisitorPass({
+
+    // Generate a professional 6-character code
+    const generateCode = () => {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+      let c = 'VIS-'
+      for (let i = 0; i < 6; i++) {
+        c += chars.charAt(Math.floor(Math.random() * chars.length))
+      }
+      return c
+    }
+
+    let code = generateCode()
+    let existingPass = await Pass.findOne({ code })
+    while (existingPass) {
+      code = generateCode()
+      existingPass = await Pass.findOne({ code })
+    }
+
+    const pass = new Pass({
       code,
       visitorName,
       visitorPhone,
@@ -1973,13 +2802,25 @@ app.post('/api/passes', async (req, res) => {
       hostPhone,
       building,
       flatNumber,
-      directions,
-      validUntil: new Date(validUntil)
+      directions: directionsStr,
+      validUntil: validUntil ? new Date(validUntil) : new Date(Date.now() + 24 * 60 * 60 * 1000) // Default 24h
     })
+    
     const saved = await pass.save()
-    res.status(201).json({ success: true, pass: saved })
+    
+    // Generate QR code data (access URL)
+    const baseUrl = process.env.VITE_APP_BASE_URL || 'http://localhost:5173'
+    const qrCodeData = `${baseUrl}/visitor/access/${code}`
+    
+    const passWithQr = {
+      ...saved.toObject(),
+      qrCode: qrCodeData
+    }
+
+    console.log(`✅ Pass created: ${code} for ${visitorName}`)
+    res.status(201).json({ success: true, pass: passWithQr })
   } catch (error) {
-    console.error('❌ Error creating visitor pass:', error)
+    console.error('❌ Error creating pass:', error)
     res.status(400).json({ success: false, error: error.message })
   }
 })
@@ -1988,24 +2829,213 @@ app.post('/api/passes', async (req, res) => {
 app.get('/api/passes/:code', async (req, res) => {
   try {
     const { code } = req.params
-    const pass = await VisitorPass.findOne({ code })
+    const pass = await Pass.findOne({ code })
     if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
-    res.json({ success: true, pass })
+    res.json({ success: true, data: pass })
   } catch (error) {
     console.error('❌ Error fetching pass:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })
 
-// List passes (optionally by host)
+// Alias for get pass by code
+app.get('/api/pass/:code', async (req, res) => {
+  try {
+    const { code } = req.params
+    const pass = await Pass.findOne({ code })
+    if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
+    res.json({ success: true, data: pass })
+  } catch (error) {
+    console.error('❌ Error fetching pass:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Verify pass (Accept/Reject Entry)
+app.post('/api/pass/verify', async (req, res) => {
+  try {
+    const { code, action, securityOfficer, reason } = req.body
+    
+    if (!code || !action) {
+      return res.status(400).json({ success: false, error: 'Code and action are required' })
+    }
+
+    const pass = await Pass.findOne({ code })
+    if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
+
+    if (action === 'accept') {
+      // Check if pass is active and not expired
+      if (pass.status !== 'active') {
+        return res.status(400).json({ success: false, error: `Pass is already ${pass.status}` })
+      }
+      if (new Date(pass.validUntil) < new Date()) {
+        return res.status(400).json({ success: false, error: 'Pass has expired' })
+      }
+
+      // Update pass status
+      pass.status = 'used'
+      pass.updatedAt = Date.now()
+      await pass.save()
+
+      // Create Visitor Log entry
+      const visitorLog = new VisitorLog({
+        visitorName: pass.visitorName,
+        visitorPhone: pass.visitorPhone,
+        visitorEmail: pass.visitorEmail,
+        idType: 'other',
+        idNumber: 'QR_PASS_' + pass.code,
+        purpose: pass.directions || 'Visitor Pass Entry',
+        hostName: pass.hostName,
+        hostFlat: `${pass.building || '-'}-${pass.flatNumber || '-'}`,
+        hostPhone: pass.hostPhone || 'N/A',
+        hostBuilding: pass.building || '',
+        hostAuthUserId: pass.hostAuthUserId,
+        securityOfficer: securityOfficer || 'Security',
+        status: 'checked_in',
+        entryTime: new Date(),
+        passGenerated: true,
+        passCode: pass.code
+      })
+      const savedLog = await visitorLog.save()
+
+      // Send notification to resident
+      try {
+        const notification = new Notification({
+          title: '🚪 Visitor Entered',
+          message: `${pass.visitorName} has entered the community using Pass ${pass.code}.`,
+          type: 'visitor',
+          priority: 'medium',
+          targetUsers: [pass.hostAuthUserId],
+          senderId: 'security',
+          senderName: securityOfficer || 'Security',
+          metadata: { visitorId: savedLog._id, actionUrl: '/visitor-logs' }
+        })
+        await notification.save()
+      } catch (notifErr) {
+        console.warn('Visitor entry notification failed:', notifErr.message)
+      }
+
+      return res.json({ success: true, message: 'Entry accepted', log: savedLog })
+    } else if (action === 'reject') {
+      pass.status = 'rejected'
+      pass.updatedAt = Date.now()
+      if (reason) {
+        pass.directions = (pass.directions || '') + ` (Rejected: ${reason})`
+      }
+      await pass.save()
+      return res.json({ success: true, message: 'Entry rejected', pass })
+    } else {
+      return res.status(400).json({ success: false, error: 'Invalid action' })
+    }
+  } catch (error) {
+    console.error('❌ Error verifying pass:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Security Activity Feed
+app.get('/api/passes/activity', async (req, res) => {
+  try {
+    // Combine Pass updates and Visitor Logs for a unified feed
+    const logs = await VisitorLog.find().sort({ entryTime: -1 }).limit(10)
+    const activities = logs.map(log => ({
+      _id: log._id,
+      type: 'visitor',
+      title: log.visitorName,
+      description: `${log.status === 'checked_in' ? 'Entered' : 'Exited'} - ${log.hostFlat}`,
+      time: log.entryTime || log.exitTime || new Date(),
+      status: log.status
+    }))
+    res.json({ success: true, activities })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Get guard's current shift
+app.get('/api/security-shifts/guard/:id', async (req, res) => {
+  try {
+    const shift = await SecurityShift.findOne({ 
+      $or: [
+        { security_id: req.params.id },
+        { 'guards.id': req.params.id }
+      ]
+    }).sort({ createdAt: -1 })
+    
+    if (!shift) return res.json({ success: false, error: 'No shift found' })
+    
+    res.json({ 
+      success: true, 
+      shift, 
+      status: new Date() < new Date(shift.endTime) ? 'On Duty' : 'Shift Ended' 
+    })
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// List passes (with advanced filtering)
 app.get('/api/passes', async (req, res) => {
   try {
-    const { host } = req.query
-    const query = host ? { hostAuthUserId: host } : {}
-    const passes = await VisitorPass.find(query).sort({ createdAt: -1 })
-    res.json({ success: true, passes })
+    const { host, search, status, startDate, endDate } = req.query
+    let query = {}
+
+    if (host) query.hostAuthUserId = host
+    
+    if (status && status !== 'all') {
+      query.status = status
+    }
+
+    if (search) {
+      const searchRegex = new RegExp(search, 'i')
+      query.$or = [
+        { visitorName: searchRegex },
+        { visitorPhone: searchRegex },
+        { code: searchRegex },
+        { flatNumber: searchRegex }
+      ]
+    }
+
+    if (startDate || endDate) {
+      query.createdAt = {}
+      if (startDate) query.createdAt.$gte = new Date(startDate)
+      if (endDate) {
+        const end = new Date(endDate)
+        end.setHours(23, 59, 59, 999)
+        query.createdAt.$lte = end
+      }
+    }
+
+    const passes = await Pass.find(query).sort({ createdAt: -1 })
+    
+    // Add qrCode to each pass
+    const baseUrl = process.env.VITE_APP_BASE_URL || 'http://localhost:5173'
+    const passesWithQr = passes.map(p => ({
+      ...p.toObject(),
+      qrCode: `${baseUrl}/visitor/access/${p.code}`
+    }))
+
+    res.json({ success: true, data: passesWithQr })
   } catch (error) {
     console.error('❌ Error listing passes:', error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// Delete a pass record
+app.delete('/api/passes/:code', async (req, res) => {
+  try {
+    const { code } = req.params
+    const pass = await Pass.findOneAndDelete({ code })
+    
+    if (!pass) {
+      return res.status(404).json({ success: false, error: 'Pass not found' })
+    }
+
+    console.log(`🗑 Pass deleted: ${code}`)
+    res.json({ success: true, message: 'Pass record deleted successfully' })
+  } catch (error) {
+    console.error('❌ Error deleting pass:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })
@@ -2014,34 +3044,30 @@ app.get('/api/passes', async (req, res) => {
 app.post('/api/passes/:code/use', async (req, res) => {
   try {
     const { code } = req.params
-    const pass = await VisitorPass.findOne({ code })
-    if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
-    if (pass.status !== 'active') {
-      return res.status(400).json({ success: false, error: 'Pass is not active' })
-    }
-    pass.status = 'used'
-    pass.updatedAt = new Date()
-    const saved = await pass.save()
-    res.json({ success: true, pass: saved })
+    const pass = await Pass.findOneAndUpdate(
+      { code, status: 'active' },
+      { status: 'used', updatedAt: Date.now() },
+      { new: true }
+    )
+    if (!pass) return res.status(404).json({ success: false, error: 'Active pass not found or already used' })
+    res.json({ success: true, data: pass })
   } catch (error) {
-    console.error('❌ Error marking pass used:', error)
+    console.error('❌ Error using pass:', error)
     res.status(500).json({ success: false, error: error.message })
   }
 })
 
-// Expire a pass (manually revoke/cancel)
+// Expire a pass
 app.post('/api/passes/:code/expire', async (req, res) => {
   try {
     const { code } = req.params
-    const pass = await VisitorPass.findOne({ code })
+    const pass = await Pass.findOneAndUpdate(
+      { code },
+      { status: 'expired', updatedAt: Date.now() },
+      { new: true }
+    )
     if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
-    if (pass.status === 'expired') {
-      return res.json({ success: true, pass })
-    }
-    pass.status = 'expired'
-    pass.updatedAt = new Date()
-    const saved = await pass.save()
-    res.json({ success: true, pass: saved })
+    res.json({ success: true, data: pass })
   } catch (error) {
     console.error('❌ Error expiring pass:', error)
     res.status(500).json({ success: false, error: error.message })
@@ -2056,12 +3082,13 @@ app.post('/api/passes/:code/status', async (req, res) => {
     if (!['active', 'used', 'expired'].includes(status)) {
       return res.status(400).json({ success: false, error: 'Invalid status' })
     }
-    const pass = await VisitorPass.findOne({ code })
+    const pass = await Pass.findOneAndUpdate(
+      { code },
+      { status, updatedAt: Date.now() },
+      { new: true }
+    )
     if (!pass) return res.status(404).json({ success: false, error: 'Pass not found' })
-    pass.status = status
-    pass.updatedAt = new Date()
-    const saved = await pass.save()
-    res.json({ success: true, pass: saved })
+    res.json({ success: true, data: pass })
   } catch (error) {
     console.error('❌ Error updating pass status:', error)
     res.status(500).json({ success: false, error: error.message })
@@ -2109,7 +3136,7 @@ app.post('/api/announcements', async (req, res) => {
     const announcementData = req.body
     const announcement = new Announcement(announcementData)
     const savedAnnouncement = await announcement.save()
-    
+
     console.log('✅ Announcement created:', savedAnnouncement._id)
 
     // Send notification to targeted users
@@ -2131,7 +3158,7 @@ app.post('/api/announcements', async (req, res) => {
     } catch (notifError) {
       console.error('❌ Error sending announcement notification:', notifError)
     }
-    
+
     res.status(201).json({ success: true, data: savedAnnouncement })
   } catch (error) {
     console.error('❌ Error creating announcement:', error)
@@ -2142,38 +3169,38 @@ app.post('/api/announcements', async (req, res) => {
 // Get all announcements with optional filtering
 app.get('/api/announcements', async (req, res) => {
   try {
-    const { 
-      limit = 100, 
-      page = 1, 
-      type, 
-      priority, 
-      isActive = true, 
+    const {
+      limit = 100,
+      page = 1,
+      type,
+      priority,
+      isActive = true,
       targetRole,
-      search 
+      search
     } = req.query
-    
+
     let query = {}
-    
+
     // Filter by active status
     if (isActive !== undefined) {
       query.isActive = isActive === 'true'
     }
-    
+
     // Filter by type
     if (type && type !== 'all') {
       query.type = type
     }
-    
+
     // Filter by priority
     if (priority && priority !== 'all') {
       query.priority = priority
     }
-    
+
     // Filter by target role - admins see all announcements, others see only targeted ones
     if (targetRole && targetRole !== 'admin') {
       query.targetRoles = { $in: [targetRole] }
     }
-    
+
     // Search filter
     if (search) {
       query.$or = [
@@ -2182,16 +3209,16 @@ app.get('/api/announcements', async (req, res) => {
         { location: { $regex: search, $options: 'i' } }
       ]
     }
-    
+
     const skip = (parseInt(page) - 1) * parseInt(limit)
-    
+
     const announcements = await Announcement.find(query)
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
       .skip(skip)
-    
+
     const total = await Announcement.countDocuments(query)
-    
+
     res.json({
       success: true,
       data: announcements,
@@ -2228,10 +3255,10 @@ app.get('/api/announcements/stats', async (req, res) => {
         { $group: { _id: '$priority', count: { $sum: 1 } } }
       ])
     ])
-    
+
     const typeCounts = typeStats.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {})
     const priorityCounts = priorityStats.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {})
-    
+
     res.json({
       success: true,
       data: {
@@ -2322,7 +3349,7 @@ app.post('/api/notifications', async (req, res) => {
     const notificationData = req.body
     const notification = new Notification(notificationData)
     const savedNotification = await notification.save()
-    
+
     console.log('✅ Notification created:', savedNotification._id)
 
     // Optional: email fan-out when metadata includes emailBroadcast=true or type is bill/complaint
@@ -2372,13 +3399,13 @@ app.post('/api/notifications', async (req, res) => {
 app.post('/api/notifications/bulk', async (req, res) => {
   try {
     const { title, message, type, priority, targetUsers, targetRoles, senderId, senderName, metadata } = req.body
-    
+
     if (!targetUsers && !targetRoles) {
       return res.status(400).json({ success: false, error: 'Either targetUsers or targetRoles must be specified' })
     }
 
     const notifications = []
-    
+
     // Create notifications for specific users (takes precedence over roles)
     if (targetUsers && targetUsers.length > 0) {
       for (const userId of targetUsers) {
@@ -2395,7 +3422,7 @@ app.post('/api/notifications/bulk', async (req, res) => {
         notifications.push(notification)
       }
     }
-    
+
     // Create notifications for roles ONLY if no specific users provided
     if ((!targetUsers || targetUsers.length === 0) && targetRoles && targetRoles.length > 0) {
       for (const role of targetRoles) {
@@ -2414,14 +3441,14 @@ app.post('/api/notifications/bulk', async (req, res) => {
     }
 
     const savedNotifications = await Notification.insertMany(notifications)
-    
+
     console.log('✅ Bulk notifications created:', savedNotifications.length)
-    res.json({ 
-      success: true, 
-      data: { 
+    res.json({
+      success: true,
+      data: {
         sentCount: savedNotifications.length,
-        notifications: savedNotifications 
-      } 
+        notifications: savedNotifications
+      }
     })
   } catch (error) {
     console.error('❌ Error creating bulk notifications:', error)
@@ -2434,7 +3461,7 @@ app.get('/api/notifications/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params
     const { limit = 50, offset = 0, unreadOnly = false, role } = req.query
-    
+
     let query = {
       $or: [
         { targetUsers: userId }
@@ -2445,11 +3472,11 @@ app.get('/api/notifications/user/:userId', async (req, res) => {
     if (role) {
       query.$or.push({ targetRoles: role })
     }
-    
+
     if (unreadOnly === 'true') {
       query.isRead = false
     }
-    
+
     const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
@@ -2457,18 +3484,18 @@ app.get('/api/notifications/user/:userId', async (req, res) => {
       .populate('metadata.billId')
       .populate('metadata.complaintId')
       .populate('metadata.visitorId')
-    
+
     const totalCount = await Notification.countDocuments(query)
     const unreadCount = await Notification.countDocuments({ ...query, isRead: false })
-    
-    res.json({ 
-      success: true, 
-      data: { 
-        notifications, 
-        totalCount, 
+
+    res.json({
+      success: true,
+      data: {
+        notifications,
+        totalCount,
         unreadCount,
         hasMore: (parseInt(offset) + notifications.length) < totalCount
-      } 
+      }
     })
   } catch (error) {
     console.error('❌ Error fetching user notifications:', error)
@@ -2480,14 +3507,14 @@ app.get('/api/notifications/user/:userId', async (req, res) => {
 app.get('/api/notifications/user/:userId/stats', async (req, res) => {
   try {
     const { userId } = req.params
-    
+
     const query = {
       $or: [
         { targetUsers: userId },
         { targetRoles: { $exists: true, $ne: [] } }
       ]
     }
-    
+
     const [totalCount, unreadCount, byType, byPriority] = await Promise.all([
       Notification.countDocuments(query),
       Notification.countDocuments({ ...query, isRead: false }),
@@ -2500,15 +3527,15 @@ app.get('/api/notifications/user/:userId/stats', async (req, res) => {
         { $group: { _id: '$priority', count: { $sum: 1 } } }
       ])
     ])
-    
-    res.json({ 
-      success: true, 
-      data: { 
-        totalCount, 
+
+    res.json({
+      success: true,
+      data: {
+        totalCount,
         unreadCount,
         byType: byType.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {}),
         byPriority: byPriority.reduce((acc, item) => ({ ...acc, [item._id]: item.count }), {})
-      } 
+      }
     })
   } catch (error) {
     console.error('❌ Error fetching notification stats:', error)
@@ -2520,17 +3547,17 @@ app.get('/api/notifications/user/:userId/stats', async (req, res) => {
 app.put('/api/notifications/:notificationId/read', async (req, res) => {
   try {
     const { notificationId } = req.params
-    
+
     const notification = await Notification.findByIdAndUpdate(
       notificationId,
       { isRead: true, readAt: new Date() },
       { new: true }
     )
-    
+
     if (!notification) {
       return res.status(404).json({ success: false, error: 'Notification not found' })
     }
-    
+
     res.json({ success: true, data: notification })
   } catch (error) {
     console.error('❌ Error marking notification as read:', error)
@@ -2542,7 +3569,7 @@ app.put('/api/notifications/:notificationId/read', async (req, res) => {
 app.put('/api/notifications/user/:userId/read-all', async (req, res) => {
   try {
     const { userId } = req.params
-    
+
     const query = {
       $or: [
         { targetUsers: userId },
@@ -2550,18 +3577,18 @@ app.put('/api/notifications/user/:userId/read-all', async (req, res) => {
       ],
       isRead: false
     }
-    
+
     const result = await Notification.updateMany(
       query,
       { isRead: true, readAt: new Date() }
     )
-    
-    res.json({ 
-      success: true, 
-      data: { 
+
+    res.json({
+      success: true,
+      data: {
         modifiedCount: result.modifiedCount,
         message: `${result.modifiedCount} notifications marked as read`
-      } 
+      }
     })
   } catch (error) {
     console.error('❌ Error marking all notifications as read:', error)
@@ -2573,13 +3600,13 @@ app.put('/api/notifications/user/:userId/read-all', async (req, res) => {
 app.delete('/api/notifications/:notificationId', async (req, res) => {
   try {
     const { notificationId } = req.params
-    
+
     const notification = await Notification.findByIdAndDelete(notificationId)
-    
+
     if (!notification) {
       return res.status(404).json({ success: false, error: 'Notification not found' })
     }
-    
+
     res.json({ success: true, data: { message: 'Notification deleted successfully' } })
   } catch (error) {
     console.error('❌ Error deleting notification:', error)

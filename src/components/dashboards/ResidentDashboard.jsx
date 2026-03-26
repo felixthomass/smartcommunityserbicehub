@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { useAuth } from '../../contexts/AuthContext'
 import { 
   Home, CreditCard, MessageSquare, QrCode, Bell, 
   User, LogOut, Settings, Calendar, Users, 
-  Building2, Phone, Mail, MapPin, Share2
+  Building2, Phone, Mail, MapPin, Share2, Brain, Sparkles, Heart, Coffee
 } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
+import { aiService } from '../../services/aiService'
 
 import { residentService } from '../../services/residentService'
 import { chatService } from '../../services/chatService'
@@ -18,10 +21,64 @@ import { deliveryService } from '../../services/deliveryService'
 import { mongoService } from '../../services/mongoService'
 import { monthlyFeeService } from '../../services/monthlyFeeService'
 import { paymentService } from '../../services/paymentService'
+import { emailService } from '../../services/emailService'
 import { showSuccess, showError, showConfirm, notify } from '../../utils/sweetAlert'
 import ResidentNotifications from '../ResidentNotifications'
 import CommunityMap from '../CommunityMap'
 import ResidentVerification from '../ResidentVerification'
+import ResidentChatbot from '../ResidentChatbot'
+const AILocalConcierge = ({ profile, userName }) => {
+  const [tips, setTips] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const getTips = async () => {
+    setLoading(true)
+    try {
+      const prompt = `You are a lifestyle concierge for ${userName}, who lives in building ${profile?.building || 'Main'} Flat ${profile?.flatNumber || 'N/A'}. 
+      Provide 3 short, friendly, and helpful lifestyle or community participation tips for today. 
+      Think about topics like local cafes, community gardening, neighborly deeds, or productivity at home.`
+      
+      const result = await aiService.generate(prompt, "You are a friendly Community Concierge Assistant powered by Gemini 1.5 Flash.")
+      if (result.success) setTips(result.text)
+      else setTips(`Hi ${userName}! Hope you have a great day in the community! Don't forget to check out the local park today.`)
+    } catch {
+      setTips("Enjoy your day in Community Hub! Wave to a neighbor today!")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (userName) getTips()
+  }, [userName])
+
+  return (
+    <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/10 dark:to-pink-900/10 rounded-2xl p-5 border border-purple-100 dark:border-purple-800 shadow-sm mb-6 relative overflow-hidden group">
+      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:rotate-12 transition-transform">
+        <Heart className="w-12 h-12 text-purple-600 dark:text-purple-400" />
+      </div>
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center shadow-md">
+          <Brain className="w-5 h-5 text-white" />
+        </div>
+        <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+          AI Lifestyle Concierge
+          <span className="flex items-center gap-1 text-[10px] bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400 px-1.5 py-0.5 rounded uppercase tracking-tighter">Gemini 1.5</span>
+        </h4>
+        {loading && <div className="ml-auto w-4 h-4 border-2 border-purple-600 border-t-transparent rounded-full animate-spin" />}
+      </div>
+      <div className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed italic border-l-2 border-purple-500 pl-3">
+        {loading ? "Our AI concierge is thinking of something special for you..." : tips || "Welcome home!"}
+      </div>
+      {!loading && (
+        <button onClick={getTips} className="mt-4 text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider flex items-center gap-1 hover:gap-2 transition-all">
+          <Sparkles className="w-3 h-3" /> Get New Recommendations
+        </button>
+      )}
+    </div>
+  )
+}
+
 const ResidentDeliveries = ({ building, flatNumber, user }) => {
   const [loading, setLoading] = useState(false)
   const [items, setItems] = useState([])
@@ -43,19 +100,31 @@ const ResidentDeliveries = ({ building, flatNumber, user }) => {
 
   const filtered = items.filter(d => {
     const q = search.trim().toLowerCase()
-    const matches = !q || [d.vendor, d.agentName, d.agentPhone, d.trackingId, d.packageDescription, d.flatNumber]
+    const matches = !q || [d.vendor, d.agentName, d.agentPhone, d.trackingId, d.packageDescription, d.flatNumber, d.status]
       .map(x => (x||'').toString().toLowerCase()).join(' ').includes(q)
-    const byStatus = status==='all' ? true : d.status === status
+    const byStatus = status==='all' ? true : d.status?.toLowerCase() === status.toLowerCase()
     return matches && byStatus
   })
 
   const accept = async (id) => {
     const res = await deliveryService.acceptDelivery(id, user.id)
     if (res.success) {
-      setItems(prev => prev.map(x => x._id===id ? { ...x, status: 'accepted', updatedAt: new Date().toISOString() } : x))
+      setItems(prev => prev.map(x => x._id===id ? { ...x, status: 'Delivered', updatedAt: new Date().toISOString() } : x))
       showSuccess('Delivery accepted!')
     } else {
       showError('Failed to accept delivery', res.error || 'Try again')
+    }
+  }
+
+  const getStatusStyle = (s) => {
+    const lowerS = (s || '').toLowerCase()
+    switch (lowerS) {
+      case 'arrived': return 'bg-yellow-100 text-yellow-800'
+      case 'waiting pickup': return 'bg-orange-100 text-orange-800'
+      case 'delivered': return 'bg-green-100 text-green-800'
+      case 'accepted': return 'bg-blue-100 text-blue-800'
+      case 'failed': return 'bg-red-100 text-red-800'
+      default: return 'bg-gray-100 text-gray-800'
     }
   }
 
@@ -65,7 +134,9 @@ const ResidentDeliveries = ({ building, flatNumber, user }) => {
         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search vendor, agent, tracking..." className="flex-1 px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
         <select value={status} onChange={e=>setStatus(e.target.value)} className="px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
           <option value="all">All Status</option>
-          <option value="delivered">Delivered</option>
+          <option value="Arrived">Arrived</option>
+          <option value="Waiting Pickup">Waiting Pickup</option>
+          <option value="Delivered">Delivered</option>
           <option value="accepted">Accepted</option>
           <option value="failed">Failed</option>
         </select>
@@ -82,7 +153,7 @@ const ResidentDeliveries = ({ building, flatNumber, user }) => {
                 <th className="text-left py-2 px-3">Vendor</th>
                 <th className="text-left py-2 px-3">Package</th>
                 <th className="text-left py-2 px-3">Agent</th>
-                <th className="text-left py-2 px-3">Time</th>
+                <th className="text-left py-2 px-3">Time / Duration</th>
                 <th className="text-left py-2 px-3">Status</th>
                 <th className="text-left py-2 px-3">Action</th>
               </tr>
@@ -91,14 +162,35 @@ const ResidentDeliveries = ({ building, flatNumber, user }) => {
               {filtered.map(d => (
                 <tr key={d._id} className="border-b border-gray-100 dark:border-gray-700">
                   <td className="py-2 px-3 font-medium text-gray-900 dark:text-white">{d.vendor}</td>
-                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">{d.packageDescription || '-'}<div className="text-xs text-gray-500">{d.trackingId}</div></td>
-                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">{d.agentName} <span className="text-xs text-gray-500">{d.agentPhone}</span></td>
-                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">{new Date(d.deliveryTime).toLocaleString()}</td>
-                  <td className="py-2 px-3">
-                    <span className={`px-2 py-1 rounded text-xs ${d.status==='accepted' ? 'bg-green-100 text-green-800' : d.status==='failed' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>{d.status}</span>
+                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">
+                    {d.packageDescription || '-'}
+                    <div className="text-xs text-gray-500">{d.trackingId}</div>
+                  </td>
+                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">
+                    {d.agentName} 
+                    <div className="text-xs text-gray-500">{d.agentPhone}</div>
+                  </td>
+                  <td className="py-2 px-3 text-sm text-gray-700 dark:text-gray-300">
+                    {new Date(d.arrival_time || d.deliveryTime).toLocaleString()}
+                    {d.time_taken !== undefined && (
+                      <div className="text-[10px] font-bold text-blue-600 uppercase mt-1">
+                        Took {d.time_taken} mins
+                      </div>
+                    )}
                   </td>
                   <td className="py-2 px-3">
-                    <button disabled={d.status!=='delivered'} onClick={()=>accept(d._id)} className={`px-3 py-1 rounded-lg text-white text-sm ${d.status==='delivered' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed'}`}>Accept</button>
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusStyle(d.status)}`}>
+                      {d.status}
+                    </span>
+                  </td>
+                  <td className="py-2 px-3">
+                    <button 
+                      disabled={d.status?.toLowerCase() !== 'waiting pickup'} 
+                      onClick={()=>accept(d._id)} 
+                      className={`px-3 py-1 rounded-lg text-white text-xs font-bold uppercase transition-all ${d.status?.toLowerCase() === 'waiting pickup' ? 'bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-100' : 'bg-gray-300 cursor-not-allowed opacity-50'}`}
+                    >
+                      {d.status?.toLowerCase() === 'delivered' || d.status?.toLowerCase() === 'accepted' ? 'Received' : 'Mark Received'}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -111,7 +203,9 @@ const ResidentDeliveries = ({ building, flatNumber, user }) => {
 }
 
 const ResidentDashboard = ({ user, onLogout, currentPage }) => {
+  const { login } = useAuth()
   const [activeTab, setActiveTab] = useState('dashboard')
+  const fileInputRef = React.useRef(null)
   const [profile, setProfile] = useState(null)
   const [profileLoading, setProfileLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -328,10 +422,12 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
     const load = async () => {
       try {
         const authUserId = user?.id
+        console.log('[DEBUG DASHBOARD] current user.id:', authUserId)
         if (!authUserId) return
         
         // Check if resident is verified
         const residentResult = await residentService.getResidentByUserId(authUserId)
+        console.log('[DEBUG DASHBOARD] getResidentByUserId result:', JSON.stringify(residentResult))
           if (residentResult.success && residentResult.data) {
           setResidentData(residentResult.data)
           if (residentResult.data.verified) {
@@ -543,6 +639,23 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       }
     }
     fetchMyComplaints()
+  }, [activeTab, user])
+
+  // Load my visitor passes when switching to visitors tab
+  useEffect(() => {
+    const fetchMyPasses = async () => {
+      if (activeTab !== 'visitors' || !user?.id) return
+      try {
+        const { passes } = await passService.listPasses({ host: user.id })
+        console.log('[DEBUG] Initial Passes Fetch:', passes)
+        const now = new Date()
+        setMyPasses((passes || []).filter(p => p.status === 'active' && (!p.validUntil || new Date(p.validUntil) > now)))
+      } catch (e) {
+        console.error('Error loading my passes:', e)
+        setMyPasses([])
+      }
+    }
+    fetchMyPasses()
   }, [activeTab, user])
 
   // Load chat rooms when chat tab is active
@@ -812,7 +925,24 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       if (activeTab !== 'visitors' || !user?.id) return
       try {
         const { passes } = await passService.listPasses(user.id)
-        setMyPasses((passes || []).filter(p => p.status === 'active'))
+        const now = new Date()
+        const activePasses = []
+        
+        for (const p of passes || []) {
+          if (p.status === 'active') {
+            if (p.validUntil && new Date(p.validUntil) <= now) {
+              try {
+                // Auto-expire pass based on valid hour limit
+                await passService.expirePass(p.code)
+              } catch (err) {
+                console.error('Failed to auto-expire pass:', err)
+              }
+            } else {
+              activePasses.push(p)
+            }
+          }
+        }
+        setMyPasses(activePasses)
       } catch (e) {
         console.error(e)
         setMyPasses([])
@@ -944,10 +1074,29 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       }
       // Optional: include a local directions hint in UI after creation; server also computes
       payload.directions = undefined
-      await passService.createPass(payload)
+      const createRes = await passService.createPass(payload)
+      console.log('[DEBUG] Create Pass API Response:', createRes)
+
+      // Email is now handled automatically by the backend
+      if (payload.visitorEmail) {
+        showSuccess('Pass Created!', `Visitor pass created and automatically emailed to ${payload.visitorEmail}`);
+      } else {
+        showSuccess('Pass Created!', 'Visitor pass has been generated successfully.');
+      }
+
       setPassForm({ visitorName: '', visitorPhone: '', visitorEmail: '', validHours: 6 })
-      const { passes } = await passService.listPasses(user.id)
-      setMyPasses((passes || []).filter(p => p.status === 'active'))
+      
+      // Immediately update state with the new pass for instant feedback
+      if (createRes.success && (createRes.pass || createRes.data)) {
+        const newPass = createRes.pass || createRes.data
+        console.log('[DEBUG] Appending new pass to state:', newPass)
+        setMyPasses(prev => [newPass, ...prev])
+      } else {
+        // Fallback: full refetch if for some reason the response isn't what we expect
+        const { passes } = await passService.listPasses(user.id)
+        const now = new Date()
+        setMyPasses((passes || []).filter(p => p.status === 'active' && (!p.validUntil || new Date(p.validUntil) > now)))
+      }
     } catch (e) {
       console.error(e)
     } finally {
@@ -1112,8 +1261,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
 
   // Share pass functions
   const sharePassViaWhatsApp = (pass) => {
-    const link = `${import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app'}/communitymap`
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
+    const link = `${import.meta.env.VITE_APP_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app')}/communitymap`
+    const qrCodeUrl = `https://quickchart.io/qr?text=${encodeURIComponent(pass.code)}&size=300&margin=1`
     
     // Calculate time remaining
     const now = new Date()
@@ -1175,7 +1324,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   // Download QR code as image
   const downloadQRCode = async (pass) => {
     try {
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=20`
+      const qrCodeUrl = `https://quickchart.io/qr?text=${encodeURIComponent(pass.code)}&size=400&margin=1`
       
       // Create a temporary link to download the QR code
       const link = document.createElement('a')
@@ -1194,8 +1343,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
   }
 
   const sharePassViaEmail = async (pass) => {
-    const link = `${import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app'}/communitymap`
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
+    const link = `${import.meta.env.VITE_APP_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app')}/communitymap`
+    const qrCodeUrl = `https://quickchart.io/qr?text=${encodeURIComponent(pass.code)}&size=300&margin=1`
     
     const subject = `🏠 Visitor Pass - ${pass.visitorName} - ${pass.building}${pass.flatNumber}`
     const body = `Dear ${pass.visitorName},\n\n` +
@@ -1238,7 +1387,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
 
   const copyPassToClipboard = async (pass) => {
     const link = `${import.meta.env.DEV ? 'http://localhost:5173' : 'https://smartcommunityserbicehub.vercel.app'}/communitymap`
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(pass.code)}&format=png&bgcolor=ffffff&color=000000&margin=10`
+    const qrCodeUrl = `https://quickchart.io/qr?text=${encodeURIComponent(pass.code)}&size=300&margin=1`
     
     const passText = `🏠 VISITOR PASS\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
@@ -1437,7 +1586,17 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
       const res = await chatFileService.uploadChatFile(file)
       if (res?.success && res.data) {
         const url = res.data.publicUrl || res.data.url || res.data.path || ''
-        if (url) setForm(prev => ({ ...prev, photoUrl: url }))
+        if (url) {
+          // Immediately update profile via authService
+          const updateRes = await authService.updateProfile({ profile_picture: url })
+          if (updateRes.success) {
+            setForm(prev => ({ ...prev, photoUrl: url }))
+            login({ ...user, profilePicture: url })
+            showSuccess('Profile picture updated!')
+          } else {
+            showError('Failed to update profile metadata', updateRes.error)
+          }
+        }
       } else {
         showError('Upload failed', res?.error || 'Could not upload image.')
       }
@@ -2043,13 +2202,33 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                       <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Code</div>
                       <div className="font-mono text-gray-900 dark:text-white">{p.code}</div>
                     </div>
-                    <div className="mt-3 flex items-center justify-center">
-                      <img
-                        alt={`QR ${p.code}`}
-                        className="w-32 h-32 border dark:border-gray-600 bg-white"
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(p.code)}`}
-                      />
+                    <div className="mt-3 flex items-center justify-center min-h-[128px]">
+                      {p.qrCode ? (
+                        p.qrCode.startsWith('data:image/') ? (
+                          <img
+                            alt={`QR ${p.code}`}
+                            className="w-32 h-32 border dark:border-gray-600 bg-white p-1 rounded"
+                            src={p.qrCode}
+                          />
+                        ) : (
+                          <div className="bg-white p-2 rounded border dark:border-gray-600 shadow-sm">
+                            <QRCodeSVG 
+                              value={p.qrCode} 
+                              size={112}
+                              level="H"
+                              includeMargin={true}
+                            />
+                          </div>
+                        )
+                      ) : (
+                        <img
+                          alt={`QR ${p.code}`}
+                          className="w-32 h-32 border dark:border-gray-600 bg-white p-1 rounded"
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent((import.meta.env.VITE_APP_BASE_URL || window.location.origin) + '/visitor/access/' + p.code)}`}
+                        />
+                      )}
                     </div>
+                    
                     <div className="mt-3 flex justify-between items-center">
                       <div className="flex gap-2">
                         <button
@@ -2076,14 +2255,7 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                           <Share2 className="w-3 h-3" />
                           Copy
                         </button>
-                        <button
-                          onClick={() => downloadQRCode(p)}
-                          className="px-3 py-1 rounded bg-purple-600 text-white hover:bg-purple-700 text-xs flex items-center gap-1"
-                          title="Download QR Code"
-                        >
-                          <QrCode className="w-3 h-3" />
-                          QR
-                        </button>
+
                       </div>
                       <button
                       onClick={async () => {
@@ -2882,6 +3054,32 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
                   Edit Profile
                 </button>
               </div>
+
+              {/* Profile Image Section */}
+              <div className="flex flex-col items-center mb-8 pb-8 border-b dark:border-gray-700">
+                <div className="relative group">
+                  <div 
+                    onClick={() => setActiveTab('edit-profile')}
+                    className="w-24 h-24 rounded-full overflow-hidden border-2 border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex items-center justify-center cursor-pointer hover:border-blue-500 transition-colors"
+                  >
+                    {user?.profilePicture ? (
+                      <img src={user.profilePicture} alt="Profile" className="w-full h-full object-cover" />
+                    ) : (
+                      <User className="w-12 h-12 text-gray-400" />
+                    )}
+                  </div>
+                  <div className="absolute -bottom-1 -right-1 bg-blue-600 text-white p-1.5 rounded-full shadow-lg">
+                    <Camera className="w-3.5 h-3.5" />
+                  </div>
+                </div>
+                <p className="mt-3 text-sm font-medium text-gray-900 dark:text-white">{user.name || 'Resident'}</p>
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="text-[10px] bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                    {user.role}
+                  </span>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <p className="text-sm text-gray-500 dark:text-gray-400">Name</p>
@@ -2927,35 +3125,50 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
               </div>
 
               {/* Avatar uploader */}
-              <div className="flex items-center gap-4 mb-6">
-                <div className="w-16 h-16 rounded-full overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-700">
-                  {(() => {
-                    const url = form.photoUrl || profile?.photoUrl
-                    if (url) return <img src={url} alt="Avatar" className="w-full h-full object-cover" />
-                    const initials = (user.name || user.email || 'U').slice(0,2).toUpperCase()
-                    return (
-                      <div className="w-full h-full flex items-center justify-center text-sm font-semibold text-gray-600 dark:text-gray-300">
-                        {initials}
+              <div className="flex flex-col items-center mb-10">
+                <div className="relative group">
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-32 h-32 rounded-full overflow-hidden border-4 border-white dark:border-gray-700 shadow-lg cursor-pointer transition-transform hover:scale-105 active:scale-95 bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center relative"
+                  >
+                    {user?.profilePicture ? (
+                      <img 
+                        src={user.profilePicture} 
+                        alt={user.name} 
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center">
+                        <User className="w-16 h-16 text-blue-600/30" />
                       </div>
-                    )
-                  })()}
+                    )}
+                    
+                    {/* Upload Overlay */}
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-full">
+                      <Camera className="w-8 h-8 text-white scale-90 group-hover:scale-100 transition-transform" />
+                    </div>
+
+                    {avatarUploading && (
+                      <div className="absolute inset-0 bg-white/50 dark:bg-gray-800/50 flex items-center justify-center rounded-full">
+                        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                      </div>
+                    )}
+                  </div>
+                  <input 
+                    type="file" 
+                    ref={fileInputRef}
+                    className="hidden" 
+                    accept="image/*"
+                    onChange={handleAvatarSelect}
+                    disabled={avatarUploading}
+                  />
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm cursor-pointer">
-                    {avatarUploading ? 'Uploading...' : 'Change Photo'}
-                    <input type="file" accept="image/*" className="hidden" onChange={handleAvatarSelect} disabled={avatarUploading} />
-                  </label>
-                  {form.photoUrl && (
-                    <button
-                      onClick={() => setForm(prev => ({ ...prev, photoUrl: '' }))}
-                      className="px-3 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 text-sm"
-                      disabled={avatarUploading}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
+                <p className="mt-4 text-xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-widest">
+                  {avatarUploading ? 'Processing...' : 'Upload Photo'}
+                </p>
               </div>
+
+              {/* Profile fields start below */}
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
@@ -3125,57 +3338,15 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
         </div>
       )}
       {/* Header */}
-      <header className="bg-white dark:bg-gray-800 shadow-sm">
+      <header className="bg-white dark:bg-gray-800 shadow-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center gap-3">
-              <Building2 className="w-8 h-8 text-blue-600" />
-              <div>
-                <h1 className="text-xl font-bold text-gray-900 dark:text-white">Resident Dashboard</h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Welcome back, {user.name || 'User'}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              {/* Header avatar */}
-              <button
-                onClick={() => setActiveTab('edit-profile')}
-                className="flex items-center gap-2 group"
-                title="View/Edit profile"
-              >
-                <div className="w-9 h-9 rounded-full overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-700">
-                  {(() => {
-                    const url = profile?.photoUrl || form.photoUrl
-                    if (url) {
-                      return (
-                        <img src={url} alt="Avatar" className="w-full h-full object-cover" />
-                      )
-                    }
-                    const initials = (user.name || user.email || 'U').slice(0,2).toUpperCase()
-                    return (
-                      <div className="w-full h-full flex items-center justify-center text-xs font-semibold text-gray-600 dark:text-gray-300">
-                        {initials}
-                      </div>
-                    )
-                  })()}
-                </div>
-                <span className="hidden sm:inline text-sm text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white">Profile</span>
-              </button>
-              {verificationChecked && residentData?.verified && needsProfile && (
-                <button
-                  onClick={() => setActiveTab('edit-profile')}
-                  className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm"
-                  title="Complete your profile"
-                >
-                  Add Profile
-                </button>
-              )}
-              <button
-                onClick={onLogout}
-                className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-              >
-                <LogOut className="w-5 h-5" />
-                Logout
-              </button>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white capitalize">
+                {activeTab === 'dashboard' ? 'Resident Dashboard' : 
+                 (activeTab === 'profile' || activeTab === 'edit-profile') ? 'Profile' : 
+                 activeTab.replace('-', ' ')}
+              </h1>
             </div>
           </div>
         </div>
@@ -3185,6 +3356,9 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
         <div className="flex flex-col lg:flex-row gap-8">
           {/* Main Content */}
           <div className="flex-1">
+            {activeTab === 'dashboard' && (
+              <AILocalConcierge profile={profile} userName={user.name} />
+            )}
             {renderContent()}
           </div>
         </div>
@@ -3455,6 +3629,8 @@ const ResidentDashboard = ({ user, onLogout, currentPage }) => {
           </div>
         </div>
       )}
+      {/* Resident Chatbot Assistant */}
+      <ResidentChatbot user={user} profile={profile} setActiveTab={setActiveTab} />
     </div>
   )
 }

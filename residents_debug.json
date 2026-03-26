@@ -1,0 +1,46 @@
+[
+  {
+    "_id": "696f802c0b36607bf0b87429",
+    "building": "A",
+    "flatNumber": "101",
+    "name": "Aby Joykutty",
+    "email": "abyjoy2@gmail.com",
+    "phone": "6235432423",
+    "aadharNumber": "290839923425",
+    "aadharUrl": "https://fgzsrgoxgoserdmbctvl.supabase.co/storage/v1/object/public/resident-documents/aadhar/A-101-abyjoy2@gmail.com_aadhar_1768914986197.jpg",
+    "isOwner": true,
+    "verified": true,
+    "verificationFeePaid": true,
+    "verificationPayment": {
+      "orderId": "order_S698CFpPV3Nun1",
+      "paymentId": "pay_S698OphUWfGcg2",
+      "signature": "f009db992448b72e0b90adee6f9a183626a1fc1d6c25b57b6227a4cdfd489432",
+      "status": "paid",
+      "paidAt": "2026-01-20T13:17:29.824Z"
+    },
+    "__v": 0,
+    "createdAt": "2026-01-20T13:16:28.518Z",
+    "updatedAt": "2026-03-23T15:32:16.024Z",
+    "supabaseUserId": "fda40f1e-ef81-4f27-9075-d8964de02c59"
+  },
+  {
+    "_id": "6999b0513c8cda73e5a88f16",
+    "building": "A",
+    "flatNumber": "102",
+    "name": "Felix Thomas",
+    "email": "Felixthomas8800@gmail.com",
+    "phone": "08590938425",
+    "aadharNumber": "290839923425",
+    "aadharUrl": "https://fgzsrgoxgoserdmbctvl.supabase.co/storage/v1/object/public/resident-documents/aadhar/A-102-Felixthomas8800@gmail.com_aadhar_1771679821555.jpg",
+    "isOwner": true,
+    "verified": false,
+    "verificationFeePaid": false,
+    "verificationPayment": {
+      "currency": "INR",
+      "status": "created"
+    },
+    "__v": 0,
+    "createdAt": "2026-02-21T13:17:05.570Z",
+    "updatedAt": "2026-02-21T13:17:05.570Z"
+  }
+]

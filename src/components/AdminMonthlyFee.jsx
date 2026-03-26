@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { CreditCard, Search, Calendar, Users, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
+import { CreditCard, Search, Calendar, Users, CheckCircle2, XCircle, RefreshCw, Brain, BarChart3 } from 'lucide-react'
 import { monthlyFeeService } from '../services/monthlyFeeService'
 import { residentService } from '../services/residentService'
 import { showSuccess as _showSuccess, showError as _showError } from '../utils/sweetAlert'
+import PaymentAnalytics from './PaymentAnalytics'
 
 const toMonthKey = (date = new Date()) => {
   const y = date.getFullYear()
@@ -23,6 +24,7 @@ const AdminMonthlyFee = ({ adminId }) => {
   const [month, setMonth] = useState(toMonthKey())
   const [statusFilter, setStatusFilter] = useState('all') // all | paid | pending
   const [buildingFilter, setBuildingFilter] = useState('all')
+  const [activeView, setActiveView] = useState('management') // management | analytics
 
   const safeShowError = (msg) => {
     try { typeof _showError === 'function' ? _showError(msg) : alert(msg) } catch { alert(msg) }
@@ -153,6 +155,26 @@ const AdminMonthlyFee = ({ adminId }) => {
 
   return (
     <div className="space-y-6">
+      {/* Tab Switcher */}
+      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl">
+        <button onClick={() => setActiveView('management')}
+          className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all ${
+            activeView === 'management' ? 'bg-white dark:bg-gray-700 text-blue-700 dark:text-blue-300 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}>
+          <CreditCard className="w-4 h-4" /> Fee Management
+        </button>
+        <button onClick={() => setActiveView('analytics')}
+          className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all ${
+            activeView === 'analytics' ? 'bg-white dark:bg-gray-700 text-indigo-700 dark:text-indigo-300 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}>
+          <Brain className="w-4 h-4" /> AI Analytics
+        </button>
+      </div>
+
+      {activeView === 'analytics' && (
+        <PaymentAnalytics residents={residents} statusMap={statusMap} month={month} feeAmount={fee?.amount || 0} />
+      )}
+
+      {activeView === 'management' && (
+      <>
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
@@ -281,6 +303,8 @@ const AdminMonthlyFee = ({ adminId }) => {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }

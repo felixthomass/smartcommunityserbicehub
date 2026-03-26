@@ -1,5 +1,10 @@
 import { useState, useEffect } from 'react'
-import { LogOut, Users, Shield, Plus, Eye, EyeOff, Search, Edit, Trash2, ArrowLeft, Filter, CreditCard, Bell, MessageSquare, Calendar, MapPin, User } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { 
+  LogOut, Users, Shield, Plus, Eye, EyeOff, Search, Edit, Trash2, ArrowLeft, Filter, 
+  CreditCard, Bell, MessageSquare, Calendar, MapPin, User, Clock,
+  AlertOctagon, LayoutDashboard, ShieldCheck, UserX, Camera 
+} from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { USER_ROLES, STAFF_DEPARTMENTS } from '../../services/authService'
 import { mongoService } from '../../services/mongoService'
@@ -15,8 +20,23 @@ import { announcementService } from '../../services/announcementService'
 import { chatService } from '../../services/chatService'
 import { chatFileService } from '../../services/chatFileService'
 import { showSuccess, showError, showConfirm, showCredentials } from '../../utils/sweetAlert'
+import { emergencyAlertService } from '../../services/emergencyAlertService'
+import GateAdmin from '../gate/GateAdmin'
+import FaceRegistration from '../gate/FaceRegistration'
+import { gateService } from '../../services/gateService'
+import AdminOverview from '../AdminOverview'
+import AdminReports from '../AdminReports'
+import AdminSettings from '../AdminSettings'
+import SecurityManagement from '../../pages/admin/SecurityManagement'
+import SecurityShiftManagement from '../../pages/admin/SecurityShiftManagement'
+import EmergencyRequests from '../../pages/admin/EmergencyRequests'
+import { useTheme } from '../../contexts/ThemeContext'
+import FaceManagement from '../../pages/admin/FaceManagement'
+import FaceEnrollment from '../gate/FaceEnrollment'
+import FaceAttendance from '../gate/FaceAttendance'
 
-const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
+const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard', setCurrentPage }) => {
+  const { darkMode, setDarkMode } = useTheme()
   const { authService } = useAuth()
   const [staffList, setStaffList] = useState([])
   const [isLoading, setIsLoading] = useState(false)
@@ -28,6 +48,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     email: '',
     role: USER_ROLES.STAFF,
     staffDepartment: '',
+    employeeId: '',
+    securityRole: '',
+    shiftTiming: '',
+    assignedGate: '',
+    employmentStatus: 'Active',
+    joiningDate: '',
     password: '',
     generatePassword: true
   })
@@ -113,9 +139,20 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   const [hasMoreMsgs, setHasMoreMsgs] = useState(false)
   const [lastSeenByRoom, setLastSeenByRoom] = useState({})
   const [unreadByRoom, setUnreadByRoom] = useState({})
-  const [residentsList, setResidentsList] = useState([])
-  const [fileUploading, setFileUploading] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
+  
+  // Shift Assignment Modal State
+  const [showShiftModal, setShowShiftModal] = useState(false)
+  const [staffToAssign, setStaffToAssign] = useState(null)
+  const [assigningShift, setAssigningShift] = useState(false)
+  const [newShift, setNewShift] = useState('')
+
+  // Biometrics Enrollment State
+  const [enrollmentModal, setEnrollmentModal] = useState({ show: false, staffId: null })
+
+  // Emergency Alerts state
+  const [emergencyAlerts, setEmergencyAlerts] = useState([])
+  const [emergencyAlertsLoading, setEmergencyAlertsLoading] = useState(false)
 
   // Safety check for user object
   if (!user) {
@@ -140,7 +177,22 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
 
       if (result.success) {
         console.log('✅ Staff users loaded:', result.users.length, 'users')
-        setStaffList(result.users || [])
+        
+        // Load biometric status
+        const bioRes = await gateService.getAllStaff()
+        const bioMap = {}
+        if (bioRes.success) {
+          bioRes.data.forEach(s => {
+            bioMap[s._id] = s.hasFace
+          })
+        }
+
+        const usersWithBio = (result.users || []).map(u => ({
+          ...u,
+          hasFace: bioMap[u.id] || false
+        }))
+        
+        setStaffList(usersWithBio)
       } else {
         console.error('❌ Failed to load staff users:', result.error)
         setStaffList([])
@@ -330,6 +382,21 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           setChatRooms([])
         } finally {
           setChatLoading(false)
+        }
+      })()
+    }
+    if (currentPage === 'emergency-alerts') {
+      ;(async () => {
+        try {
+          setEmergencyAlertsLoading(true)
+          const result = await emergencyAlertService.getAlertHistory()
+          if (result.success) {
+            setEmergencyAlerts(result.alerts || [])
+          }
+        } catch (e) {
+          console.error('Error loading emergency alerts:', e)
+        } finally {
+          setEmergencyAlertsLoading(false)
         }
       })()
     }
@@ -609,6 +676,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         email: staffForm.email,
         role: staffForm.role,
         staffDepartment: staffForm.role === USER_ROLES.STAFF ? staffForm.staffDepartment : null,
+        employeeId: staffForm.role === USER_ROLES.SECURITY ? staffForm.employeeId : null,
+        securityRole: staffForm.role === USER_ROLES.SECURITY ? staffForm.securityRole : null,
+        shiftTiming: staffForm.role === USER_ROLES.SECURITY ? staffForm.shiftTiming : null,
+        assignedGate: staffForm.role === USER_ROLES.SECURITY ? staffForm.assignedGate : null,
+        employmentStatus: staffForm.role === USER_ROLES.SECURITY ? staffForm.employmentStatus : null,
+        joiningDate: staffForm.role === USER_ROLES.SECURITY ? staffForm.joiningDate : null,
         customPassword: staffForm.generatePassword ? null : staffForm.password
       }
 
@@ -634,6 +707,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           email: '',
           role: USER_ROLES.STAFF,
           staffDepartment: '',
+          employeeId: '',
+          securityRole: '',
+          shiftTiming: '',
+          assignedGate: '',
+          employmentStatus: 'Active',
+          joiningDate: '',
           password: '',
           generatePassword: true
         })
@@ -647,10 +726,42 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         showError('Error Creating User', result.error || 'Unknown error occurred.')
       }
     } catch (error) {
-      console.error('Error creating staff:', error)
-      showError('Error Creating User', error.message || 'Please try again later.')
+      console.error('Error updating staff:', error)
+      showError('Error Updating Staff', error.message || 'Please try again later.')
     } finally {
       setIsCreatingStaff(false)
+    }
+  }
+
+  // Handle direct shift assignment
+  const handleAssignShift = async () => {
+    if (!staffToAssign || !newShift) return
+
+    try {
+      setAssigningShift(true)
+      const result = await authService.updateStaffUser(staffToAssign.user_id || staffToAssign.id, {
+        ...staffToAssign,
+        shiftTiming: newShift
+      })
+
+      if (result.success) {
+        showSuccess('Shift Assigned', `Successfully assigned ${newShift} shift to ${staffToAssign.name}`)
+        setShowShiftModal(false)
+        setStaffList(prev => prev.map(s => 
+          (s.user_id === (staffToAssign.user_id || staffToAssign.id)) 
+            ? { ...s, shiftTiming: newShift, shift_timing: newShift } 
+            : s
+        ))
+        // Still call loadStaffList to ensure full sync
+        loadStaffList()
+      } else {
+        showError('Assignment Failed', result.error || 'Unknown error occurred.')
+      }
+    } catch (error) {
+      console.error('Error assigning shift:', error)
+      showError('Assignment Failed', error.message || 'Please try again later.')
+    } finally {
+      setAssigningShift(false)
     }
   }
 
@@ -675,17 +786,46 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
   }
 
   // Handle staff editing
-  const handleEditStaff = (staff) => {
+  const handleEditStaff = async (staff) => {
     setEditingStaff(staff)
-    setStaffForm({
+    // base initialization
+    const initialForm = {
       name: staff.name || '',
       email: staff.email || '',
       role: staff.role || USER_ROLES.STAFF,
       staffDepartment: staff.staffDepartment || '',
+      employeeId: staff.employeeId || '',
+      securityRole: staff.securityRole || '',
+      shiftTiming: staff.shiftTiming || '',
+      assignedGate: staff.assignedGate || '',
+      employmentStatus: staff.employmentStatus || 'Active',
+      joiningDate: staff.joiningDate || '',
       password: '',
       generatePassword: true
-    })
+    }
+    
+    setStaffForm(initialForm)
     setStaffView('edit')
+
+    // asynchronously load security metadata if applicable
+    if (staff.role === USER_ROLES.SECURITY) {
+      try {
+        const result = await residentService.getProfile(staff.id)
+        if (result.success && result.resident) {
+          setStaffForm(prev => ({
+            ...prev,
+            employeeId: result.resident.employeeId || prev.employeeId,
+            securityRole: result.resident.securityRole || prev.securityRole,
+            shiftTiming: result.resident.shiftTiming || prev.shiftTiming,
+            assignedGate: result.resident.assignedGate || prev.assignedGate,
+            employmentStatus: result.resident.employmentStatus || prev.employmentStatus,
+            joiningDate: result.resident.joiningDate ? result.resident.joiningDate.split('T')[0] : prev.joiningDate
+          }))
+        }
+      } catch(err) {
+        console.error('Failed to preload security profile fields', err)
+      }
+    }
   }
 
   // Handle staff update
@@ -709,7 +849,13 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
         name: staffForm.name,
         email: staffForm.email,
         role: staffForm.role,
-        staffDepartment: staffForm.staffDepartment
+        staffDepartment: staffForm.role === USER_ROLES.STAFF ? staffForm.staffDepartment : null,
+        employeeId: staffForm.role === USER_ROLES.SECURITY ? staffForm.employeeId : null,
+        securityRole: staffForm.role === USER_ROLES.SECURITY ? staffForm.securityRole : null,
+        shiftTiming: staffForm.role === USER_ROLES.SECURITY ? staffForm.shiftTiming : null,
+        assignedGate: staffForm.role === USER_ROLES.SECURITY ? staffForm.assignedGate : null,
+        employmentStatus: staffForm.role === USER_ROLES.SECURITY ? staffForm.employmentStatus : null,
+        joiningDate: staffForm.role === USER_ROLES.SECURITY ? staffForm.joiningDate : null
       })
 
       if (result.success) {
@@ -721,6 +867,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
           email: '',
           role: USER_ROLES.STAFF,
           staffDepartment: '',
+          employeeId: '',
+          securityRole: '',
+          shiftTiming: '',
+          assignedGate: '',
+          employmentStatus: 'Active',
+          joiningDate: '',
           password: '',
           generatePassword: true
         })
@@ -1041,6 +1193,111 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
     }
   }
 
+  const renderEmergencyAlerts = () => (
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-xl flex items-center justify-center">
+              <AlertOctagon className="w-8 h-8 text-red-600" />
+            </div>
+            <div>
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Emergency Alerts History</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Review all emergency alerts triggered by security personnel.</p>
+            </div>
+          </div>
+          <button
+            onClick={async () => {
+              setEmergencyAlertsLoading(true)
+              const result = await emergencyAlertService.getAlertHistory()
+              if (result.success) setEmergencyAlerts(result.alerts || [])
+              setEmergencyAlertsLoading(false)
+            }}
+            className="flex items-center gap-2 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            🔄 Refresh
+          </button>
+        </div>
+
+        {emergencyAlertsLoading ? (
+          <div className="text-center py-12">
+            <div className="w-10 h-10 border-4 border-red-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-gray-600 dark:text-gray-400 font-medium">Loading emergency alerts...</p>
+          </div>
+        ) : emergencyAlerts.length === 0 ? (
+          <div className="text-center py-12 bg-gray-50 dark:bg-gray-700/30 rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700">
+            <ShieldCheck className="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+            <p className="text-gray-600 dark:text-gray-400 font-medium text-lg">No emergency alerts recorded</p>
+            <p className="text-sm text-gray-500 dark:text-gray-500 max-w-xs mx-auto mt-2">All systems are normal. No emergency triggers have been reported yet.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full table-auto">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left py-4 px-4 font-bold text-gray-900 dark:text-white uppercase tracking-wider text-xs">Time & Date</th>
+                  <th className="text-left py-4 px-4 font-bold text-gray-900 dark:text-white uppercase tracking-wider text-xs">Alert Type</th>
+                  <th className="text-left py-4 px-4 font-bold text-gray-900 dark:text-white uppercase tracking-wider text-xs">Security Officer</th>
+                  <th className="text-left py-4 px-4 font-bold text-gray-900 dark:text-white uppercase tracking-wider text-xs">Location</th>
+                  <th className="text-left py-4 px-4 font-bold text-gray-900 dark:text-white uppercase tracking-wider text-xs">Details</th>
+                  <th className="text-left py-4 px-4 font-bold text-gray-900 dark:text-white uppercase tracking-wider text-xs text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                {emergencyAlerts.map((alert) => (
+                  <tr key={alert._id} className="hover:bg-red-50/30 dark:hover:bg-red-900/10 transition-colors">
+                    <td className="py-4 px-4 text-sm whitespace-nowrap">
+                      <div className="text-gray-900 dark:text-white font-medium">
+                        {new Date(alert.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {new Date(alert.time).toLocaleDateString()}
+                      </div>
+                    </td>
+                    <td className="py-4 px-4">
+                      <span className="flex items-center gap-2 font-bold text-red-600 dark:text-red-400 text-sm">
+                        <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
+                        {alert.alertType || 'Emergency'}
+                      </span>
+                    </td>
+                    <td className="py-4 px-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[10px] font-bold">
+                          {alert.securityOfficerName?.charAt(0)}
+                        </div>
+                        <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">{alert.securityOfficerName}</span>
+                      </div>
+                    </td>
+                    <td className="py-4 px-4">
+                      <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                        <MapPin className="w-4 h-4" />
+                        {alert.location || alert.gate}
+                      </div>
+                    </td>
+                    <td className="py-4 px-4">
+                      <p className="text-sm text-gray-600 dark:text-gray-400 max-w-xs truncate" title={alert.description || alert.message}>
+                        {alert.description || alert.message}
+                      </p>
+                    </td>
+                    <td className="py-4 px-4 text-right">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-widest ${
+                        alert.status === 'active' 
+                          ? 'bg-red-100 text-red-800 animate-pulse' 
+                          : 'bg-green-100 text-green-800'
+                      }`}>
+                        {alert.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
   const handleEditAnnouncement = (announcement) => {
     setSelectedAnnouncement(announcement)
     setAnnouncementForm({
@@ -1111,6 +1368,12 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                         email: '',
                         role: USER_ROLES.STAFF,
                         staffDepartment: '',
+                        employeeId: '',
+                        securityRole: '',
+                        shiftTiming: '',
+                        assignedGate: '',
+                        employmentStatus: 'Active',
+                        joiningDate: '',
                         password: '',
                         generatePassword: true
                       })
@@ -1209,18 +1472,53 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                                 <p className="text-sm text-gray-600 dark:text-gray-400">{staff.email}</p>
                               </div>
                             </div>
-                            <div className="flex gap-2">
-                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded">
+                            <div className="flex gap-2 items-center mt-2">
+                              <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 text-xs rounded font-bold uppercase tracking-widest">
                                 {staff.role}
                               </span>
                               {staff.staffDepartment && (
-                                <span className="px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 text-xs rounded">
+                                <span className="px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 text-xs rounded font-bold uppercase tracking-widest">
                                   {staff.staffDepartment}
+                                </span>
+                              )}
+                              {staff.shiftTiming ? (
+                                <span className="px-2 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-200 text-xs rounded font-bold uppercase tracking-widest flex items-center gap-1">
+                                  {staff.shiftTiming === 'Morning' ? '🌅 Morning' :
+                                   staff.shiftTiming === 'Afternoon' ? '🌇 Afternoon' :
+                                   '🌃 Night'}
+                                </span>
+                              ) : (
+                                <span className="px-2 py-1 bg-gray-100 dark:bg-gray-800 text-gray-400 text-xs rounded font-bold uppercase tracking-widest">
+                                  No Shift 🕒
                                 </span>
                               )}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
+                             <button
+                               onClick={() => {
+                                 setStaffToAssign(staff)
+                                 setNewShift(staff.shiftTiming || '')
+                                 setShowShiftModal(true)
+                                }}
+                               className="flex items-center gap-2 px-3 py-1.5 text-xs font-black uppercase tracking-widest bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/10"
+                             >
+                               <Clock className="w-3.5 h-3.5" />
+                               Assign Shift
+                             </button>
+                             <button
+                               onClick={() => setEnrollmentModal({ show: true, staffId: staff.id })}
+                               className={`flex items-center gap-2 px-3 py-1.5 text-xs font-black uppercase tracking-widest rounded-lg transition-all shadow-lg ${
+                                 staff.hasFace 
+                                   ? 'bg-blue-100 text-blue-600 shadow-blue-500/5' 
+                                   : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-500/10'
+                               }`}
+                               title={staff.hasFace ? "Registered" : "Register Face"}
+                             >
+                               <Camera className="w-3.5 h-3.5" />
+                               {staff.hasFace ? 'Registered' : 'Enroll Face'}
+                             </button>
+                             <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
                             <button
                               onClick={() => handleEditStaff(staff)}
                               className="p-2 text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
@@ -1314,6 +1612,63 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
                   </div>
                 )}
               </div>
+
+              {/* Staff/Security Specific Details */}
+              {(staffForm.role === USER_ROLES.STAFF || staffForm.role === USER_ROLES.SECURITY) && (
+                <div className="bg-gray-50 dark:bg-gray-800/50 p-6 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <h4 className="flex items-center gap-2 text-lg font-medium text-gray-900 dark:text-white mb-4">
+                    <Shield className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                    {staffForm.role === USER_ROLES.SECURITY ? 'Security Job Details' : 'Staff Job Details'}
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Employee ID</label>
+                      <input type="text" value={staffForm.employeeId} onChange={(e) => handleStaffFormChange('employeeId', e.target.value)} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white" placeholder="Enter Employee ID" />
+                    </div>
+                    
+                    {staffForm.role === USER_ROLES.SECURITY && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Security Role</label>
+                        <select value={staffForm.securityRole} onChange={(e) => handleStaffFormChange('securityRole', e.target.value)} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                          <option value="">Select Role</option>
+                          <option value="Gate Security">Gate Security</option>
+                          <option value="Patrol">Patrol</option>
+                          <option value="Supervisor">Supervisor</option>
+                        </select>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Shift Timing</label>
+                      <select value={staffForm.shiftTiming} onChange={(e) => handleStaffFormChange('shiftTiming', e.target.value)} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                        <option value="">Select Shift</option>
+                        <option value="Morning">Morning</option>
+                        <option value="Afternoon">Afternoon</option>
+                        <option value="Night">Night</option>
+                      </select>
+                    </div>
+
+                    {staffForm.role === USER_ROLES.SECURITY && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Assigned Gate/Area</label>
+                        <input type="text" value={staffForm.assignedGate} onChange={(e) => handleStaffFormChange('assignedGate', e.target.value)} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white" placeholder="Enter Assigned Gate" />
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Employment Status</label>
+                      <select value={staffForm.employmentStatus} onChange={(e) => handleStaffFormChange('employmentStatus', e.target.value)} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                        <option value="Active">Active</option>
+                        <option value="Off Duty">Off Duty</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Joining Date</label>
+                      <input type="date" value={staffForm.joiningDate} onChange={(e) => handleStaffFormChange('joiningDate', e.target.value)} className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Password Configuration - Only show when creating new users */}
               {staffView === 'add' && (
@@ -3667,71 +4022,68 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       )
     }
 
+    if (currentPage === 'reports') {
+      return <AdminReports user={user} staffList={staffList} />
+    }
+
     if (currentPage === 'settings') {
-      return (
-        <div className="space-y-6">
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-            <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Settings</h3>
-            <p className="text-gray-600 dark:text-gray-400">Platform settings (coming soon).</p>
-          </div>
-        </div>
-      )
+      return <AdminSettings user={user} darkMode={darkMode} setDarkMode={setDarkMode} />
+    }
+
+    if (currentPage === 'security-management') {
+      return <SecurityManagement />
+    }
+
+    if (currentPage === 'shift-scheduling') {
+      return <SecurityShiftManagement />
+    }
+
+    if (currentPage === 'emergency-requests') {
+      return <EmergencyRequests user={user} />
+    }
+
+    if (currentPage === 'emergency-alerts') {
+      return renderEmergencyAlerts()
+    }
+
+    if (currentPage === 'gate-management') {
+      return <GateAdmin />
+    }
+
+    if (currentPage === 'face-enrollment') {
+      return <FaceEnrollment />
+    }
+
+    if (currentPage === 'face-management') {
+      return <FaceManagement />
+    }
+
+    if (currentPage === 'face-attendance') {
+      return <FaceAttendance />
     }
 
     // Default dashboard content
-    return (
-          <div className="space-y-6">
-            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">Admin Dashboard</h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-6">
-                Welcome to the Community Service Platform administration panel. Use the sidebar navigation to manage different aspects of the platform.
-              </p>
-            </div>
-
-            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">System Overview</h3>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                  <div className="flex items-center gap-3">
-                    <Users className="w-6 h-6 text-blue-600" />
-                    <span className="text-gray-900 dark:text-white">Total Residents</span>
-                  </div>
-                  <span className="text-2xl font-bold text-gray-900 dark:text-white">156</span>
-                </div>
-                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                  <div className="flex items-center gap-3">
-                    <Shield className="w-6 h-6 text-green-600" />
-                    <span className="text-gray-900 dark:text-white">Staff & Security Members</span>
-                  </div>
-                  <span className="text-2xl font-bold text-gray-900 dark:text-white">{staffList.length}</span>
-                </div>
-                <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                  <p className="text-sm text-blue-800 dark:text-blue-200">
-                    💡 <strong>Tip:</strong> Use the sidebar navigation to manage different aspects of the community platform.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )
+    return <AdminOverview user={user} staffList={staffList} setCurrentPage={setCurrentPage} />
   }
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <header className="bg-white dark:bg-gray-800 shadow">
+      <header className="bg-white dark:bg-gray-800 shadow sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-4">
             <div>
               <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Admin Dashboard</h1>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Welcome back, {user.name || 'Admin'}!</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">Welcome, {user?.name || 'Administrator'}</p>
             </div>
-            <button
-              onClick={onLogout}
-              className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-            >
-              <LogOut className="w-5 h-5" />
-              Logout
-            </button>
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={onLogout}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 transition-colors"
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Logout
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -3739,6 +4091,118 @@ const AdminDashboard = ({ user, onLogout, currentPage = 'dashboard' }) => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {renderContent()}
       </div>
+
+      {/* Shift Assignment Modal */}
+      <AnimatePresence>
+        {showShiftModal && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white dark:bg-gray-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden relative border border-gray-100 dark:border-gray-800"
+            >
+              {/* Modal Header */}
+              <div className="bg-emerald-500 p-6 text-white relative">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md">
+                    <Clock className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black tracking-tight uppercase">Assign Shift</h3>
+                    <p className="text-emerald-100 text-[10px] font-bold uppercase tracking-widest mt-0.5">Selection for {staffToAssign?.name}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowShiftModal(false)}
+                  className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors"
+                >
+                  <Trash2 className="w-5 h-5 rotate-45" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-8 space-y-6">
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">
+                    Select Shift Timing
+                  </label>
+                  <div className="grid grid-cols-1 gap-3">
+                    {[
+                      { id: 'Morning', label: 'Morning', icon: '🌅', timing: '6:00 AM — 2:00 PM' },
+                      { id: 'Afternoon', label: 'Afternoon', icon: '🌇', timing: '2:00 PM — 10:00 PM' },
+                      { id: 'Night', label: 'Night', icon: '🌃', timing: '10:00 PM — 6:00 AM' }
+                    ].map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => setNewShift(s.id)}
+                        className={`p-4 rounded-2xl border-2 transition-all text-left flex items-center gap-4 group ${
+                          newShift === s.id 
+                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/5' 
+                          : 'border-gray-100 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700'
+                        }`}
+                      >
+                        <span className="text-2xl">{s.icon}</span>
+                        <div className="flex-1">
+                          <p className={`font-black text-sm uppercase tracking-tight ${newShift === s.id ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-white'}`}>
+                            {s.label}
+                          </p>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{s.timing}</p>
+                        </div>
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                          newShift === s.id ? 'border-emerald-500 bg-emerald-500' : 'border-gray-200 dark:border-gray-700'
+                        }`}>
+                          {newShift === s.id && <div className="w-2 h-2 bg-white rounded-full shadow-inner" />}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => setShowShiftModal(false)}
+                    className="flex-1 px-6 py-4 rounded-2xl border-2 border-gray-100 dark:border-gray-800 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAssignShift}
+                    disabled={assigningShift || !newShift}
+                    className="flex-[2] px-6 py-4 rounded-2xl bg-emerald-500 text-white text-[10px] font-black uppercase tracking-widest shadow-xl shadow-emerald-500/20 hover:scale-[1.02] active:scale-98 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+                  >
+                    {assigningShift ? (
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : 'Confirm Shift'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Biometrics Enrollment Modal */}
+      {enrollmentModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="relative w-full max-w-5xl bg-white dark:bg-gray-800 rounded-[3rem] shadow-2xl overflow-hidden max-h-[90vh] overflow-y-auto">
+            <button 
+              onClick={() => setEnrollmentModal({ show: false, staffId: null })}
+              className="absolute top-6 right-6 z-10 p-2 bg-gray-100 dark:bg-gray-700 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 transition"
+            >
+              <X className="w-6 h-6 text-gray-500" />
+            </button>
+            <div className="p-4">
+              <FaceRegistration 
+                staffId={enrollmentModal.staffId} 
+                onComplete={(success) => {
+                  if (success) loadStaffList();
+                  setEnrollmentModal({ show: false, staffId: null });
+                }} 
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
